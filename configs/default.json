@@ -1,0 +1,9 @@
+{
+    "mongo" : {
+        "host" : "",
+        "dbName" : "", 
+        "port" : ""
+    },
+    "sourceSystem" : "",
+    "targetSystem" : ""
+}

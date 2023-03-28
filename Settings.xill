@@ -1,0 +1,33 @@
+use File, Stream, System, String, Collection;
+
+
+var settings = getSettings(); 
+
+function getSettings(){
+    var settings = {};
+    var SysInfo = System.info(); 
+    
+    var config = System.parseJSON(Stream.getText(File.openRead("config.json")));
+    
+    settings["configFolder"] = config.configFolder;
+    
+    var configs = File.iterateFiles(config.configFolder, false);
+    foreach(config in configs){
+        if(String.endsWith(config, ".json")){
+            var name = pathToName(config);
+
+                settings[name] = System.parseJSON(Stream.getText(File.openRead(config)));
+
+        }
+    }
+    
+    return settings;
+}
+
+
+
+function pathToName(path) {
+     path = String.replace(path, "(.*[/\\\\])(.*)", "$2");
+     path = String.replace(path, "(\\.[\\-0-9a-zA-Z]+)$", "");
+     return path;
+}
