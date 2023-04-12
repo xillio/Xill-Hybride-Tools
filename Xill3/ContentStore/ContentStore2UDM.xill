@@ -1,20 +1,11 @@
 use Assert, Collection, ContentType, Date, Decode, Document, Encode, Excel, ExifTool, File, Hash, MariaDB, Math, Mongo, MSSQL, MySQL, Oracle, Properties, SQLite, Stream, String, System, Template, Web, XML, XURL, Postgres;
 
 
-// var collectionName = Properties.get("udm.collection");
-// var host = Properties.get("udm.host");
-// var port = Properties.get("udm.port");
 var targetDBName = "2udm";
 var targetDB = Mongo.connect(targetDBName);
-// var sourceDBName = "xill4_something";
-// var sourceDB = Mongo.connect(targetDBName,host,port);
-// var nct = {"noCursorTimeout":1,"batchSize":100};
-
 var sourceDB  = Mongo.connect("demoHami");
 
-// create Function that will retrieve BINARY info of given RECORD 
-
-
+// Function that will retrieve BINARY info of given RECORD 
 function getBinaryInfo(_id) {   
     var query = {"_id":"BIN"::_id};
     var projection = {
@@ -25,12 +16,36 @@ function getBinaryInfo(_id) {
         "source.localReference":1
     };
     var binary = Mongo.find("documents", query, projection);
-    // binary = collect(binary);
     foreach(i,bin in binary){
     return bin;
     }
 }
 
+
+function getBinary(_id) {   
+    var allBinaries = [];
+    var query = {"_id":_id};
+    var projection = {
+        "source.binaries" : 1,
+    };
+    var binaries = Mongo.find("documents", query, projection);
+    foreach(i,binary in binaries){
+      foreach(i,binary in binary.source.binaries){
+         var query = {"_id":binary};
+         var projection = {
+             "source.externalReference" : 1,
+          };
+         var binaryOne = Mongo.find("documents", query, projection);
+             foreach(i,binary in binaryOne){
+             allBinaries[] = binary.source.externalReference;
+            //  Change externalReference to localReference
+          }
+        }
+     }
+return allBinaries;
+}
+
+// Function that will retrieve all Versions of given RECORD 
 
 var pipeline = [
     {"$match" : {"kind" : {"$in" : ["RECORD", "CONTAINER"] }}},
@@ -42,9 +57,7 @@ var pipeline = [
     {"$sort" : {"source.versionInfo.label" : 1} }
 ] ; 
 
-
 var docsGroupsByVersion = Mongo.aggregate("documents", pipeline, {}, sourceDB) ; 
-
 transformAll();
 
 function transformAll() {
@@ -56,11 +69,8 @@ function transformAll() {
     }
     var currentDocument = documents[Collection.length(documents) -1] ; 
      transformRecordOrContainer(currentDocument, documents);
-
     }
 }
-
-
 
 function transformRecordOrContainer(doc,versionDocs){
     var model = {};
@@ -68,7 +78,7 @@ function transformRecordOrContainer(doc,versionDocs){
     
     if(doc.kind  == "RECORD"){
         model += mapObjectOptional(doc) ; 
-        var binary = getBinaryInfo(doc._id);
+        var binary = getBinaryInfo(doc._id); // make sure itś an array
         
         model +={ 
         "file":{
@@ -82,15 +92,11 @@ function transformRecordOrContainer(doc,versionDocs){
                 "versions": mapVersions(versionDocs),
                 "properties": doc.source.properties
             };
-            
-
          var update = {"$set": {"_id": doc._id, 
                                 "kind": "Document",
                                 "original": model,
                                 "modified": model
                       }};
-    
-    
     Mongo.findOneAndUpdate("documents", {"_id":doc._id}, update, {"upsert":true}, targetDB);
     }
     
@@ -101,18 +107,14 @@ function transformRecordOrContainer(doc,versionDocs){
                      "hasChildren": null,
                  },
                  "properties": doc.source.properties
-
             };
          var update = {"$set": {"_id": doc._id, 
                                 "kind": "Folder",
                                 "original": model,
                                 "modified": model
                       }};
-    
-    
     Mongo.findOneAndUpdate("documents", {"_id":doc._id}, update, {"upsert":true}, targetDB);
     }
-      
 }
 
 private function mapRequiredProperties(doc,versionDocs){
@@ -151,10 +153,9 @@ private function mapRequiredProperties(doc,versionDocs){
                 },
                  "permissions" : [],
             };
-        
-        return commonPropsModel ; 
-    
+    return commonPropsModel ; 
 }
+
 private function mapObjectOptional(doc){
     var model = {};
         if(doc.source.properties.succinctProperties["cmis:description"]){
@@ -197,23 +198,37 @@ private function mapObjectOptional(doc){
             if(doc.source.auditLogs){
                 model += {"auditLogs": [doc.source.auditLogs] };
             }
-            
-                    return model ;
+    return model ;
 }
 
 
 private function mapVersions(versionDocs){
     var versionArr = [] ; 
     foreach(i, version in versionDocs){
-        var simpleVersionModel = version.source.properties; 
-        versionArr[] = simpleVersionModel ; 
-        // plug in binariesadd proeprty "filevalue" : {path to binary}
- 
+        versionArr[] = mapVersion(version) ; 
+        null ; 
     }
     return versionArr ; 
 }
 
 
-
+private function mapVersion(version){
+    var versionModel = {}  ; 
+    var binaryPath = [] ; 
+    do{
+        versionModel += version.source.properties;
+        var allBinaries = getBinary(version._id); 
+        foreach(i,binary in allBinaries){
+            binaryPath[] = binary;
+        }
+    }fail(error){
+        System.print("An error was encountered: " :: error, "ERROR") ; 
+        
+    }success{
+        versionModel += {"binaryPath" : binaryPath} ; 
+        System.print("Successfully added binary path to version model for id " :: version._id, "DEBUG") ; 
+    }
+    return versionModel ; 
+}
 
 
