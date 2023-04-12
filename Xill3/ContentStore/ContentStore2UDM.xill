@@ -230,7 +230,6 @@ private function mapVersions(versionDocs){
     return versionArr ; 
 }
 
-
 private function mapVersion(version){
     var versionModel = {}  ; 
     var binaryPath = null ; 
