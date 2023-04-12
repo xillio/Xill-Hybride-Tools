@@ -5,7 +5,34 @@ var targetDBName = "2udm";
 var targetDB = Mongo.connect(targetDBName);
 var sourceDB  = Mongo.connect("demoHami");
 
-// Function that will retrieve BINARY info of given RECORD 
+
+var config = {
+    // modifed or target / source or original
+}; 
+
+function getAcls(_id){
+    var aclsResp = [];
+    var query = {"_id":_id};
+    var projection = {
+        "source.acls" : 1,
+    };
+    var resp = Mongo.findOne("documents", query, projection);
+    if( resp){
+    foreach(res in resp.source.acls)
+    {
+        var query = {"_id":res};
+        var response = Mongo.findOne("documents", query);
+        var aclsResponse = response.source;
+        aclsResp[] = aclsResponse;
+    }
+    }
+    0;
+    return aclsResp;
+}
+
+
+
+// create Function that will retrieve BINARY info of given RECORD 
 function getBinaryInfo(_id) {   
     var query = {"_id":"BIN"::_id};
     var projection = {
@@ -15,37 +42,10 @@ function getBinaryInfo(_id) {
         "source.externalReference":1,
         "source.localReference":1
     };
-    var binary = Mongo.find("documents", query, projection);
-    foreach(i,bin in binary){
-    return bin;
-    }
+    var binary = Mongo.findOne("documents", query, projection);
+    return binary ; 
 }
 
-
-function getBinary(_id) {   
-    var allBinaries = [];
-    var query = {"_id":_id};
-    var projection = {
-        "source.binaries" : 1,
-    };
-    var binaries = Mongo.find("documents", query, projection);
-    foreach(i,binary in binaries){
-      foreach(i,binary in binary.source.binaries){
-         var query = {"_id":binary};
-         var projection = {
-             "source.externalReference" : 1,
-          };
-         var binaryOne = Mongo.find("documents", query, projection);
-             foreach(i,binary in binaryOne){
-             allBinaries[] = binary.source.externalReference;
-            //  Change externalReference to localReference
-          }
-        }
-     }
-return allBinaries;
-}
-
-// Function that will retrieve all Versions of given RECORD 
 
 var pipeline = [
     {"$match" : {"kind" : {"$in" : ["RECORD", "CONTAINER"] }}},
@@ -78,6 +78,7 @@ function transformRecordOrContainer(doc,versionDocs){
     
     if(doc.kind  == "RECORD"){
         model += mapObjectOptional(doc) ; 
+        // model += mapObjectACL(doc) ;
         var binary = getBinaryInfo(doc._id); // make sure itś an array
         
         model +={ 
@@ -90,6 +91,7 @@ function transformRecordOrContainer(doc,versionDocs){
                     "type":doc.source.properties.succinctProperties["cmis:contentStreamMimeType"]
                 },
                 "versions": mapVersions(versionDocs),
+                "permissions": mapObjectACL(doc._id),
                 "properties": doc.source.properties
             };
          var update = {"$set": {"_id": doc._id, 
@@ -202,6 +204,23 @@ private function mapObjectOptional(doc){
 }
 
 
+
+private function mapObjectACL(_id){
+    var acls = getAcls(_id);
+    var commonAclModel = [];
+    foreach(acl in acls){
+         commonAclModel[] = {
+                    "principal" : {
+                        "principalId" : acl.principals
+                    },
+                    "permissions" : acl.permissions
+         };
+          null ; 
+    }
+    return commonAclModel;
+}
+
+
 private function mapVersions(versionDocs){
     var versionArr = [] ; 
     foreach(i, version in versionDocs){
@@ -214,13 +233,13 @@ private function mapVersions(versionDocs){
 
 private function mapVersion(version){
     var versionModel = {}  ; 
-    var binaryPath = [] ; 
+    var binaryPath = null ; 
     do{
         versionModel += version.source.properties;
-        var allBinaries = getBinary(version._id); 
-        foreach(i,binary in allBinaries){
-            binaryPath[] = binary;
-        }
+        var binary = getBinaryInfo(version._id); 
+        
+        binaryPath = binary.source.localReference;
+        
     }fail(error){
         System.print("An error was encountered: " :: error, "ERROR") ; 
         
