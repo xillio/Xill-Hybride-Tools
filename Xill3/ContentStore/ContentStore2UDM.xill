@@ -30,8 +30,6 @@ function getAcls(_id){
     return aclsResp;
 }
 
-
-
 // create Function that will retrieve BINARY info of given RECORD 
 function getBinaryInfo(_id) {   
     var query = {"_id":"BIN"::_id};
@@ -78,11 +76,9 @@ function transformRecordOrContainer(doc,versionDocs){
     
     if(doc.kind  == "RECORD"){
         model += mapObjectOptional(doc) ; 
-        // model += mapObjectACL(doc) ;
         var binary = getBinaryInfo(doc._id); // make sure itś an array
-        
         model +={ 
-        "file":{
+             "file":{
                     "extension":binary.source.extension, // plug in ibinary info
                     "rawExtension":binary.source.rawExtension, // info binary
                     "size":binary.source.byteSize // binary info
@@ -91,7 +87,6 @@ function transformRecordOrContainer(doc,versionDocs){
                     "type":doc.source.properties.succinctProperties["cmis:contentStreamMimeType"]
                 },
                 "versions": mapVersions(versionDocs),
-                "permissions": mapObjectACL(doc._id),
                 "properties": doc.source.properties
             };
          var update = {"$set": {"_id": doc._id, 
@@ -153,7 +148,7 @@ private function mapRequiredProperties(doc,versionDocs){
                     "path" : doc.source.hierarchies[0],
                     "depth" : ""
                 },
-                 "permissions" : [],
+                 "permissions" : mapObjectACL(doc._id),
             };
     return commonPropsModel ; 
 }
@@ -209,13 +204,15 @@ private function mapObjectACL(_id){
     var acls = getAcls(_id);
     var commonAclModel = [];
     foreach(acl in acls){
-         commonAclModel[] = {
-                    "principal" : {
-                        "principalId" : acl.principals
-                    },
-                    "permissions" : acl.permissions
-         };
-          null ; 
+    var principals = acl.principals;
+         foreach(principal in principals){
+             commonAclModel[] = {
+                        "principal" : {
+                            "principalId" : principal.systemName
+                        },
+                        "permissions" : acl.permissions
+                };
+             }
     }
     return commonAclModel;
 }
@@ -230,18 +227,16 @@ private function mapVersions(versionDocs){
     return versionArr ; 
 }
 
+
 private function mapVersion(version){
     var versionModel = {}  ; 
     var binaryPath = null ; 
     do{
         versionModel += version.source.properties;
         var binary = getBinaryInfo(version._id); 
-        
         binaryPath = binary.source.localReference;
-        
     }fail(error){
         System.print("An error was encountered: " :: error, "ERROR") ; 
-        
     }success{
         versionModel += {"binaryPath" : binaryPath} ; 
         System.print("Successfully added binary path to version model for id " :: version._id, "DEBUG") ; 
