@@ -1,14 +1,36 @@
 use Assert, Collection, ContentType, Date, Decode, Document, Encode, Excel, ExifTool, File, Hash, MariaDB, Math, Mongo, MSSQL, MySQL, Oracle, Properties, SQLite, Stream, String, System, Template, Web, XML, XURL, Postgres;
 
+//-------------------------------------------------------------------------
+//						  SETUP
+//-------------------------------------------------------------------------
 
 var targetDBName = "2udm";
 var targetDB = Mongo.connect(targetDBName);
 var sourceDB  = Mongo.connect("demoHami");
 
+//-------------------------------------------------------------------------
+//						  MAIN
+//-------------------------------------------------------------------------
 
-var config = {
-    // modifed or target / source or original
-}; 
+transformAll();
+
+function transformAll() {
+    foreach(i, grouping in groupDocByVersion()) {
+        var documents = grouping.docs; 
+        var lenTest = Collection.length(documents) ;
+        if(lenTest >1) {
+            null ; 
+        }
+        var currentDocument = documents[Collection.length(documents) -1] ; 
+        transformRecordOrContainer(currentDocument, documents);
+    }
+}
+
+//-------------------------------------------------------------------------
+//						  FUNCTIONS AND QUERY
+//-------------------------------------------------------------------------
+
+//Function that will retrieve ACLS
 
 function getAcls(_id){
     var aclsResp = [];
@@ -17,7 +39,7 @@ function getAcls(_id){
         "source.acls" : 1,
     };
     var resp = Mongo.findOne("documents", query, projection);
-    if( resp){
+    if(resp){
     foreach(res in resp.source.acls)
     {
         var query = {"_id":res};
@@ -30,7 +52,8 @@ function getAcls(_id){
     return aclsResp;
 }
 
-// create Function that will retrieve BINARY info of given RECORD 
+//Function that will retrieve BINARY info of given RECORD
+
 function getBinaryInfo(_id) {   
     var query = {"_id":"BIN"::_id};
     var projection = {
@@ -44,8 +67,9 @@ function getBinaryInfo(_id) {
     return binary ; 
 }
 
-
-var pipeline = [
+// //Function that will retrieve all versions
+function groupDocByVersion(){
+    var pipeline = [
     {"$match" : {"kind" : {"$in" : ["RECORD", "CONTAINER"] }}},
     {"$group": {
         "_id" : "$source.versionInfo.seriesId",
@@ -54,68 +78,57 @@ var pipeline = [
     }},
     {"$sort" : {"source.versionInfo.label" : 1} }
 ] ; 
-
-var docsGroupsByVersion = Mongo.aggregate("documents", pipeline, {}, sourceDB) ; 
-transformAll();
-
-function transformAll() {
-    foreach(i, grouping in docsGroupsByVersion) {
-    var documents = grouping.docs; 
-    var lenTest = Collection.length(documents) ;
-    if(lenTest >1) {
-        null ; 
-    }
-    var currentDocument = documents[Collection.length(documents) -1] ; 
-     transformRecordOrContainer(currentDocument, documents);
-    }
+return  Mongo.aggregate("documents", pipeline, {}, sourceDB) ;
 }
+
+
+
+
+// Transform Document and Folder
 
 function transformRecordOrContainer(doc,versionDocs){
+    var logs = []; 
+    var transform = mapMigTransformDecorator();
+    var load = mapMigLoadDecorator();
+    var docExtractSuccess = false; 
+    var transformedDoc = {}; 
     var model = {};
-    model += mapRequiredProperties(doc,versionDocs); 
-    
-    if(doc.kind  == "RECORD"){
-        model += mapObjectOptional(doc) ; 
-        var binary = getBinaryInfo(doc._id); // make sure itś an array
-        model +={ 
-             "file":{
-                    "extension":binary.source.extension, // plug in ibinary info
-                    "rawExtension":binary.source.rawExtension, // info binary
-                    "size":binary.source.byteSize // binary info
-                },
-                "mimeType":{
-                    "type":doc.source.properties.succinctProperties["cmis:contentStreamMimeType"]
-                },
-                "versions": mapVersions(versionDocs),
-                "properties": doc.source.properties
-            };
-         var update = {"$set": {"_id": doc._id, 
-                                "kind": "Document",
-                                "original": model,
-                                "modified": model
-                      }};
-    Mongo.findOneAndUpdate("documents", {"_id":doc._id}, update, {"upsert":true}, targetDB);
+    do{
+       transformedDoc['_id'] = doc._id; 
+        model += mapRequiredProperties(doc,versionDocs); 
+        if(doc.kind  == "RECORD"){
+            transformedDoc += {"kind": "Document"};
+            model += mapDocument(doc, versionDocs);
+        }
+        if(doc.kind  == "CONTAINER"){
+            transformedDoc += {"kind": "Folder"};
+            model += mapFolder(doc, versionDocs);
+        }
+        transformedDoc += {
+            "original": model,
+            "modified": model
+        }; 
+    }fail(error){
+        docExtractSuccess = false; 
+        logs[] = {"datetime" : Date.now(), "message" : error, "type" : "error"}; 
+    } success {
+        docExtractSuccess = true; 
+        logs[] = {"datetime" : Date.now(), "message" : "Successfully transformed item from content store to UDM.", "type" : "info"}; 
+    }finally {
+        Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
+        Mongo.updateOne('documents', {"_id" : doc._id}, 
+            {"$set" : {
+                "migration.export.document" : docExtractSuccess,
+                "migration.load" : load,
+                "migration.transform" : transform
+            } }, {"upsert" : true}, targetDB) ; 
     }
-    
-    if(doc.kind  == "CONTAINER"){
-        model += mapObjectOptional(doc) ; 
-        model += {
-                 "container":{
-                     "hasChildren": null,
-                 },
-                 "properties": doc.source.properties
-            };
-         var update = {"$set": {"_id": doc._id, 
-                                "kind": "Folder",
-                                "original": model,
-                                "modified": model
-                      }};
-    Mongo.findOneAndUpdate("documents", {"_id":doc._id}, update, {"upsert":true}, targetDB);
-    }
+    return transformedDoc;
 }
 
+// map common for folders and records
+
 private function mapRequiredProperties(doc,versionDocs){
-    // map common for folders and records
     var commonPropsModel = {
                  "name" :{
                     "systemName" : doc.source.name.systemName,
@@ -139,10 +152,6 @@ private function mapRequiredProperties(doc,versionDocs){
                     "date" : doc.source.lastModified.date,
                     "by" : doc.source.lastModified.principal.systemName
                 },
-                "migration" : {
-                    "migrate" : doc.migration.migrate,
-                    "origin" : doc.migration.origin,
-                },
                   "fileSystem":{
                      "id" : doc.source.id,
                     "path" : doc.source.hierarchies[0],
@@ -152,6 +161,8 @@ private function mapRequiredProperties(doc,versionDocs){
             };
     return commonPropsModel ; 
 }
+
+// map optionals for folders and records
 
 private function mapObjectOptional(doc){
     var model = {};
@@ -198,14 +209,14 @@ private function mapObjectOptional(doc){
     return model ;
 }
 
-
+// Map object ACLS
 
 private function mapObjectACL(_id){
     var acls = getAcls(_id);
     var commonAclModel = [];
     foreach(acl in acls){
-    var principals = acl.principals;
-         foreach(principal in principals){
+        var principals = acl.principals;
+        foreach(principal in principals){
              commonAclModel[] = {
                         "principal" : {
                             "principalId" : principal.systemName
@@ -217,16 +228,31 @@ private function mapObjectACL(_id){
     return commonAclModel;
 }
 
+// Transform versions 
 
 private function mapVersions(versionDocs){
-    var versionArr = [] ; 
-    foreach(i, version in versionDocs){
-        versionArr[] = mapVersion(version) ; 
-        null ; 
+    var logs = [];
+    var update = {}; 
+    var seriesId = versionDocs[0].source.versionInfo.seriesId; 
+    do{
+        var versionArr = [] ; 
+        foreach(i, version in versionDocs){
+            versionArr[] = mapVersion(version) ; 
+            null ; 
+        }
+        return versionArr ;    
+    }fail(error){
+        update['migration.export.versions'] = false ; 
+        logs[] = {"datetime" : Date.now(), "message" : error, "type" : "error"}; 
+    } success {
+        update['migration.export.versions'] = true ; 
+        logs[] = {"datetime" : Date.now(), "message" : "Successfully exported the versions from content store to UDM.", "type" : "info"}; 
+    }finally {
+        Mongo.updateOne('documents', {"_id" : seriesId}, {"$set" : update, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
     }
-    return versionArr ; 
 }
 
+// Map object for versions
 
 private function mapVersion(version){
     var versionModel = {}  ; 
@@ -241,7 +267,58 @@ private function mapVersion(version){
         versionModel += {"binaryPath" : binaryPath} ; 
         System.print("Successfully added binary path to version model for id " :: version._id, "DEBUG") ; 
     }
+    finally{
+    }
     return versionModel ; 
+}
+
+
+private function mapDocument(doc, versionDocs){
+      var model = {};
+      var binary = getBinaryInfo(doc._id); // make sure itś an array
+        model +={ 
+             "file":{
+                    "extension":binary.source.extension, // plug in ibinary info
+                    "rawExtension":binary.source.rawExtension, // info binary
+                    "size":binary.source.byteSize // binary info
+                },
+                "mimeType":{
+                    "type":doc.source.properties.succinctProperties["cmis:contentStreamMimeType"]
+                },
+                "versions": mapVersions(versionDocs),
+                "properties": [doc.source.properties, mapObjectOptional(doc)]
+            };
+        return model;
+}
+
+private function mapFolder(doc, versionDocs){
+    var model = {}; 
+     model += mapObjectOptional(doc) ; 
+        model += {
+                 "container":{
+                     "hasChildren": null,
+                 },
+                 "properties": doc.source.properties
+            };
+     return model;
+}
+
+
+private function mapMigTransformDecorator(){
+    var migDecorator = {
+            "createModel" : false
+        };
+    return migDecorator; 
+}
+
+private function mapMigLoadDecorator(){
+    var migDecorator = {
+            "migrate":false,
+            "status":null,
+            "target":null,
+            "batch": null
+    }; 
+    return migDecorator; 
 }
 
 
