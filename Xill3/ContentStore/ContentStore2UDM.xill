@@ -4,9 +4,9 @@ use Assert, Collection, ContentType, Date, Decode, Document, Encode, Excel, Exif
 //						  SETUP
 //-------------------------------------------------------------------------
 
-var targetDBName = "2udm";
+var targetDBName = "";
 var targetDB = Mongo.connect(targetDBName);
-var sourceDB  = Mongo.connect("demoHami");
+var sourceDB  = Mongo.connect("");
 
 //-------------------------------------------------------------------------
 //						  MAIN
