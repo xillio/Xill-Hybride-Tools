@@ -1,0 +1,253 @@
+use Assert, Collection, ContentType, Date, Decode, Document, Encode, Excel, ExifTool, File, Hash, MariaDB, Math, Mongo, MSSQL, MySQL, Oracle, Properties, SQLite, Stream, String, System, Template, Web, XML, XURL, Postgres;
+
+
+
+//-------------------------------------------------------------------------
+//						  SETUP
+//-------------------------------------------------------------------------
+
+var targetDBName = "contentStore";
+var targetDB = Mongo.connect(targetDBName);
+var sourceDB  = Mongo.connect("2udm");
+
+
+//-------------------------------------------------------------------------
+//						  MAIN
+//-------------------------------------------------------------------------
+
+
+transformAll();
+
+function transformAll() {
+     foreach(i, doc in allDocs()) {
+        transformRecordOrContainer(doc);
+        if(doc.kind == "Document"){
+                createBinary(doc);
+            }
+        }
+    }
+
+
+
+
+//-------------------------------------------------------------------------
+//						  FUNCTIONS AND QUERY
+//-------------------------------------------------------------------------
+
+
+function allDocs(){
+   var query = {};
+  return Mongo.find("documents", query);
+}
+
+
+
+
+// original.versions.binaryPath
+
+function transformRecordOrContainer(doc){
+    var transformedDoc = {}; 
+    var model = {};
+    do{
+       transformedDoc['_id'] = doc._id; 
+        model += mapRequiredProperties(doc); 
+        if(doc.kind  == "Document"){
+            transformedDoc += {"kind": "RECORD"};
+            model += mapDocument(doc);
+        
+        }
+        if(doc.kind == "Folder"){
+            transformedDoc += {"kind": "CONTAINER"};
+            model += mapFolder(doc);
+        }
+        transformedDoc += {
+            "source":model,
+            "target":model
+        }; 
+    }fail(error){
+        // docExtractSuccess = false; 
+        // logs[] = {"datetime" : Date.now(), "message" : error, "type" : "error"}; 
+    } success {
+        // docExtractSuccess = true; 
+        // logs[] = {"datetime" : Date.now(), "message" : "Successfully transformed item from content store to UDM.", "type" : "info"}; 
+    }finally {
+        // Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
+        Mongo.updateOne('documents', {"_id" : doc._id}, 
+            {"$set" : {
+                "migration": doc.migration
+            } }, {"upsert" : true}, targetDB) ; 
+    }
+            Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
+
+    return transformedDoc;
+}
+
+
+// map common for Containers and Records
+private function mapRequiredProperties(doc){
+    var commonPropsModel = {
+                            "id": doc.original.fileSystem.id, 
+                            "parentIds": doc.original.parent.id, 
+                            "hierarchies": [doc.original.fileSystem.path],
+                              "name": {
+                              "systemName": doc.original.name.systemName, 
+                            //   "displayName": doc.original.name.systemName 
+                            },
+                            "contentType": {
+                              "systemName": doc.original.contentType.systemName, 
+                            //   "displayName": doc.original.contentType.systemName 
+                            },
+                            "states": [],
+                            "created": {
+                              "date": doc.original.created.date,
+                              "principal": {
+                                "systemName": doc.original.created.by, 
+                                // "displayName": doc.original.created.by 
+                              }
+                            },
+                            "lastModified": {
+                              "date": doc.original.modified.date,
+                              "principal": {
+                                "systemName": doc.original.modified.by,
+                                // "displayName": doc.original.modified.by 
+                              }
+                            },
+                            
+                        };
+                        
+    return commonPropsModel ; 
+}
+
+
+// map optionals for folders and records
+
+private function mapObjectOptional(doc){
+    var model = {};  
+    if(doc.original.parent.ancestors){
+                model += {"ancestors":doc.original.parent.ancestors};
+            }
+    if(doc.original.description){
+                model += {"description": doc.original.description};
+            }
+                // "lastAccessed": {
+    //   // OPTIONAL | OBJECT
+    //   "date": "{{source.lastAccessed.date}}", // OPTIONAL | DATE
+    //   "principal": {
+    //     // OPTIONAL | OBJECT
+    //     "systemName": "{{source.lastAccessed.principal.systemName}}", // REQUIRED | STRING
+    //     "displayName": "{{source.lastAccessed.principal.displayName}}" // OPTIONAL | STRING
+    //   }
+    // },
+    // "author": {
+    //   // OPTIONAL | OBJECT
+    //   "principal": {
+    //     // REQUIRED | OBJECT
+    //     "systemName": "{{source.author.principal.systemName}}", // REQUIRED | STRING
+    //     "displayName": "{{source.author.principal.displayName}}" // OPTIONAL | STRING
+    //   }
+    // },
+    // "owner": {
+    //   // OPTIONAL | OBJECT
+    //   "principal": {
+    //     // REQUIRED | OBJECT
+    //     "systemName": "{{source.owner.principal.systemName}}", // REQUIRED | STRING
+    //     "displayName": "{{source.owner.principal.displayName}}" // OPTIONAL | STRING
+    //   }
+    // },
+    // "language": {
+    //   // OPTIONAL | OBJECT
+    //   "systemName": "{{source.language.systemName}}", // REQUIRED | STRING
+    //   "displayName": "{{source.language.displayName}}", //OPTIONAL | STRING
+    //   "masterReference": "{{_id}}" // REQUIRED | STRING | If the object is the master, reference to itself
+    // },
+    // "web": {
+    //   // OPTIONAL | OBJECT
+    //   "publishedTo": "{{source.web.publishedTo}}", // OPTIONAL | ARRAY | List of environments where the content is published to
+    //   "url": "{{source.web.url}}" // REQUIRED | STRING | Full web URL to the object
+    // },
+    // "properties": {
+    //   // OPTIONAL | OBJECT | Object containing a copy of the original object. Within target it contains the system specific or custom properties.
+    // },
+    
+    // "acls": [
+    //   // OPTIONAL | ARRAY OF _ID REFERRING TO THE ACL OBJECTS
+    // ],
+    // "auditLogs": [
+    //  // OPTIONAL | ARRAY OF _ID REFERRING TO THE AUDIT LOG OBJECTS
+    // ]
+return model;
+}
+
+ 
+//  Map Document
+private function mapDocument(doc){
+          var model = {};
+          model += mapObjectOptional(doc);
+          model +={ 
+              "binaries":[ "BIN"::doc._id],
+              "versionInfo": {
+                              "label":  getLabel(doc), 
+                              "minor": 1, 
+                              "major": 1, 
+                              "seriesId": doc._id, 
+                              "isCurrent": true,
+                            },
+              "properties": doc.original.properties[0].succinctProperties,
+        
+            };
+        return model;
+}
+
+
+// Create binary Object
+private function createBinary(doc){
+          var model = {};
+          model +={ 
+                "source": {
+                        "source.extension" : doc.original.file.extension,
+                        "source.rawExtension": doc.original.file.rawExtension,
+                        "source.byteSize":doc.original.file.size,
+                        "source.externalReference":doc.original.fileSystem.id,
+                        "source.localReference":doc.original.fileSystem.path,
+                        "properties": doc.original.properties,
+                        }
+                 };
+             System.print(doc._id);
+  var result =  Mongo.updateOne("documents", {"_id" :"BIN":: doc._id}, 
+            {"$set" : model},{"upsert" : true}, targetDB);
+            0;
+           
+}
+
+// Map folder 
+private function mapFolder(doc){
+            var model = {}; 
+            model += mapObjectOptional(doc) ; 
+            model += {
+                     "versionInfo": {
+                                  "label": "1.0", 
+                                  "minor": 1, 
+                                  "major": 1, 
+                                  "seriesId": doc._id, 
+                                  "isCurrent": true,
+                                },
+                    "properties": doc.original.properties.succinctProperties,
+                };
+        return model;
+}
+    
+    
+//Get label number for VersionInfo 
+function getLabel(doc){
+    var label = null;
+    if(doc.kind=="Document"){
+            var versionInfoLabel = doc.original.fileSystem.id;
+            var getLabel = String.split(versionInfoLabel, ";");
+             label = getLabel[Collection.length(getLabel) -1];
+        }
+    return label;
+}
+
+   
+
+
