@@ -1,14 +1,13 @@
 use Assert, Collection, ContentType, Date, Decode, Document, Encode, Excel, ExifTool, File, Hash, MariaDB, Math, Mongo, MSSQL, MySQL, Oracle, Properties, SQLite, Stream, String, System, Template, Web, XML, XURL, Postgres;
 
 
-
 //-------------------------------------------------------------------------
 //						  SETUP
 //-------------------------------------------------------------------------
 
 var targetDBName = "contentStore";
 var targetDB = Mongo.connect(targetDBName);
-var sourceDB  = Mongo.connect("2udm");
+var sourceDB  = Mongo.connect("udm_provincie_utrecht_PROD");
 
 
 //-------------------------------------------------------------------------
@@ -16,10 +15,40 @@ var sourceDB  = Mongo.connect("2udm");
 //-------------------------------------------------------------------------
 
 
+transformAllVersions();
+
+function transformAllVersions() {
+    foreach(i, doc in allDocsVersions()) {
+    var versions = doc.original.versions; 
+    foreach(v in versions){
+        createBinary(doc);
+        var transformedDoc = {};
+        var model = {};
+        transformedDoc += {"kind": "RECORD"};
+        // Create rtecord, createe binary, create acls
+         model +=mapVersionsRequiredProperties(v) ; 
+         model += mapDocument(doc) ;
+         var label = v.number;
+         model.versionInfo.label = label;
+         var modify = v.r_modify_date;
+         model.lastModified.date = modify;
+         
+     0;
+      transformedDoc += {
+            "source":model,
+            "target":model
+        }; 
+         Mongo.updateOne("CCO_Delta", { "_id":  v.r_object_id }, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
+
+            }            
+    }
+    }
+
+
 transformAll();
 
 function transformAll() {
-     foreach(i, doc in allDocs()) {
+     foreach(i, doc in allDocsNoVersion()) {
         transformRecordOrContainer(doc);
         if(doc.kind == "Document"){
                 createBinary(doc);
@@ -28,28 +57,59 @@ function transformAll() {
     }
 
 
-
-
 //-------------------------------------------------------------------------
 //						  FUNCTIONS AND QUERY
 //-------------------------------------------------------------------------
 
 
-function allDocs(){
-   var query = {};
-  return Mongo.find("documents", query);
+function allDocsVersions(){
+   var pipeline = [
+  {
+    "$match": {
+      "original.versions": {
+        "$exists": true,
+        "$ne": []
+      }
+    }
+  },
+  {
+    "$match": {
+     "$expr": {
+        "$gt": [{ "$size": "$original.versions" }, 1]
+      }
+    }
+  }
+]; 
+  return Mongo.aggregate("CCO_Delta", pipeline);
 }
 
+function allDocsNoVersion(){
+    var pipeline = [
+  {
+    "$match": {
+      "$or": [
+        {
+          "original.versions": {
+            "$size": 1
+          }
+        },
+        {
+          "kind": "Folder"
+        }
+      ]
+    }
+  }
+];
+ return Mongo.aggregate("CCO_Delta", pipeline);
+}
 
-
-
-// original.versions.binaryPath
+// Transform Record or Container
 
 function transformRecordOrContainer(doc){
     var transformedDoc = {}; 
     var model = {};
     do{
-       transformedDoc['_id'] = doc._id; 
+      transformedDoc['_id'] = doc._id; 
         model += mapRequiredProperties(doc); 
         if(doc.kind  == "Document"){
             transformedDoc += {"kind": "RECORD"};
@@ -72,22 +132,52 @@ function transformRecordOrContainer(doc){
         // logs[] = {"datetime" : Date.now(), "message" : "Successfully transformed item from content store to UDM.", "type" : "info"}; 
     }finally {
         // Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
-        Mongo.updateOne('documents', {"_id" : doc._id}, 
+        Mongo.updateOne('CCO_Delta', {"_id" : doc._id}, 
             {"$set" : {
                 "migration": doc.migration
             } }, {"upsert" : true}, targetDB) ; 
     }
-            Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
+            Mongo.updateOne('CCO_Delta', {"_id" : doc._id}, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
 
     return transformedDoc;
+}
+
+
+
+
+
+private function mapVersionsRequiredProperties(v){
+        var model = {
+                            "id": v.r_object_id, 
+                            "parentIds": v.i_folder_id, 
+                            // "hierarchies": [v.original.fileSystem.path],
+                              "name": {
+                              "systemName": v.object_name, 
+                            //   "displayName": v.original.name.systemName 
+                            },
+                            "contentType": {
+                              "systemName": v.r_object_type
+                            //   "displayName": v.original.contentType.systemName 
+                            },
+                            "states": [],
+                            "created": {
+                              "date": v.r_creation_date,
+                              "principal": {
+                                "systemName": v.owner_name, 
+                                // "displayName": v.original.created.by 
+                              }
+                            },
+                        };
+                        
+    return model ; 
 }
 
 
 // map common for Containers and Records
 private function mapRequiredProperties(doc){
     var commonPropsModel = {
-                            "id": doc.original.fileSystem.id, 
-                            "parentIds": doc.original.parent.id, 
+                            "id": doc.id, 
+                            "parentIds": [doc.original.parent.id], 
                             "hierarchies": [doc.original.fileSystem.path],
                               "name": {
                               "systemName": doc.original.name.systemName, 
@@ -101,25 +191,25 @@ private function mapRequiredProperties(doc){
                             "created": {
                               "date": doc.original.created.date,
                               "principal": {
-                                "systemName": doc.original.created.by, 
+                                "systemName": doc.original.created.by.systemName, 
                                 // "displayName": doc.original.created.by 
                               }
                             },
                             "lastModified": {
                               "date": doc.original.modified.date,
                               "principal": {
-                                "systemName": doc.original.modified.by,
+                                "systemName": doc.original.modified.by.systemName,
                                 // "displayName": doc.original.modified.by 
                               }
                             },
-                            
+                            "properties": doc.original.properties,
                         };
                         
     return commonPropsModel ; 
 }
 
 
-// map optionals for folders and records
+// map optionals for Containers and records
 
 private function mapObjectOptional(doc){
     var model = {};  
@@ -184,17 +274,25 @@ private function mapDocument(doc){
           var model = {};
           model += mapObjectOptional(doc);
           model +={ 
+             "hierarchies": [doc.original.fileSystem.path],
               "binaries":[ "BIN"::doc._id],
               "versionInfo": {
-                              "label":  getLabel(doc), 
+                              "label":  "", 
                               "minor": 1, 
                               "major": 1, 
                               "seriesId": doc._id, 
                               "isCurrent": true,
                             },
-              "properties": doc.original.properties[0].succinctProperties,
-        
+            "lastModified": {
+              "date": "",
+              "principal": {
+                "systemName": doc.original.modified.by.systemName,
+                // "displayName": doc.original.modified.by 
+              }
+            },
+            "properties": doc.original.properties,
             };
+            
         return model;
 }
 
@@ -213,7 +311,7 @@ private function createBinary(doc){
                         }
                  };
              System.print(doc._id);
-  var result =  Mongo.updateOne("documents", {"_id" :"BIN":: doc._id}, 
+  var result =  Mongo.updateOne("CCO_Delta", {"_id" :"BIN":: doc._id}, 
             {"$set" : model},{"upsert" : true}, targetDB);
             0;
            
@@ -231,22 +329,10 @@ private function mapFolder(doc){
                                   "seriesId": doc._id, 
                                   "isCurrent": true,
                                 },
-                    "properties": doc.original.properties.succinctProperties,
                 };
         return model;
 }
     
-    
-//Get label number for VersionInfo 
-function getLabel(doc){
-    var label = null;
-    if(doc.kind=="Document"){
-            var versionInfoLabel = doc.original.fileSystem.id;
-            var getLabel = String.split(versionInfoLabel, ";");
-             label = getLabel[Collection.length(getLabel) -1];
-        }
-    return label;
-}
 
    
 
