@@ -15,7 +15,7 @@ var sourceDB  = Mongo.connect("udm_provincie_utrecht_PROD");
 //-------------------------------------------------------------------------
 
 
-transformAllVersions();
+// transformAllVersions();
 
 function transformAllVersions() {
     foreach(i, doc in allDocsVersions()) {
@@ -50,6 +50,7 @@ transformAll();
 function transformAll() {
      foreach(i, doc in allDocsNoVersion()) {
         transformRecordOrContainer(doc);
+        // mapACL(doc);
         if(doc.kind == "Document"){
                 createBinary(doc);
             }
@@ -83,6 +84,8 @@ function allDocsVersions(){
   return Mongo.aggregate("CCO_Delta", pipeline);
 }
 
+
+// 09021748818105929999
 function allDocsNoVersion(){
     var pipeline = [
   {
@@ -202,6 +205,7 @@ private function mapRequiredProperties(doc){
                                 // "displayName": doc.original.modified.by 
                               }
                             },
+                             "acls": [],
                             "properties": doc.original.properties,
                         };
                         
@@ -292,29 +296,31 @@ private function mapDocument(doc){
             },
             "properties": doc.original.properties,
             };
-            
-        return model;
+              return model;
+      
 }
 
 
 // Create binary Object
 private function createBinary(doc){
-          var model = {};
+        var model = {};
+        var versions = doc.modified.versions;
+        foreach (version in versions){
           model +={ 
                 "source": {
-                        "source.extension" : doc.original.file.extension,
-                        "source.rawExtension": doc.original.file.rawExtension,
-                        "source.byteSize":doc.original.file.size,
-                        "source.externalReference":doc.original.fileSystem.id,
-                        "source.localReference":doc.original.fileSystem.path,
-                        "properties": doc.original.properties,
+                        "source.extension" : version.dos_extension,
+                        "source.rawExtension": version.dos_extension,
+                        "source.byteSize":version.full_content_size,
+                        "source.externalReference":version.r_object_id,
+                        "source.localReference":version.filevalue,
+                        // "properties": doc.original.properties,
                         }
                  };
-             System.print(doc._id);
-  var result =  Mongo.updateOne("CCO_Delta", {"_id" :"BIN":: doc._id}, 
+             System.print(version.r_object_id);
+  var result =  Mongo.updateOne("CCO_Delta", {"_id" :"BIN"::version.r_object_id}, 
             {"$set" : model},{"upsert" : true}, targetDB);
             0;
-           
+           }
 }
 
 // Map folder 
@@ -331,6 +337,64 @@ private function mapFolder(doc){
                                 },
                 };
         return model;
+}
+
+
+private function mapACL(doc){
+if(doc.original.permissions){
+var permissions = doc.original.permissions;
+foreach(permission in permissions){
+    var aclModel = {
+ 
+    "kind":"ACL",
+    "source" : {
+        "name" : {
+            "systemName" : permission.object_name,
+            "displayName" : permission.object_name
+        },
+        "description" : null,
+        "created" : {
+            "date" : "11/04/2023",
+            "principal" : {
+                "systemName" : "",
+                "displayName" : ""
+            }
+        },
+        "lastModified" : {
+            "date" : "12/04/2023",
+            "principal" : {
+                "systemName" : "",
+                "displayName" : ""
+            }
+        },
+        "permissions" : permission.r_accessor_permit,
+        "principals" : permission.r_accessor_name,
+        "properties" : {}
+    },
+    "migration" : {
+        "id" : "1",
+        "migrate" : true,
+        "failed" : false,
+        "failedMessage" : "",
+        "workerId" : "",
+        "workerStatus" : "",
+        "retryMessage" : {},
+        "retryTarget" : "",
+        "origin" : "Test"
+    }
+};
+             System.print(doc._id);
+             
+            //  var uuid = Mongo.objectId(aclModel.source.name.systemName);
+
+var id= Hash.toMD5(aclModel.source.name.systemName);
+  var result =  Mongo.findOneAndUpdate("CCO_Delta", {"_id": id},
+            {"$set" : aclModel},{"upsert" : true}, targetDB);
+            0;
+
+ 
+}
+}
 }
     
 
