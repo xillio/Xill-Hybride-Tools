@@ -14,46 +14,45 @@ var sourceDB  = Mongo.connect("udm_provincie_utrecht_PROD");
 //						  MAIN
 //-------------------------------------------------------------------------
 
-
+transformAllFolders();
 transformAllVersions();
+
 
 function transformAllVersions() {
     foreach(i, doc in allDocsVersions()) {
     var versions = doc.modified.versions; 
     foreach(v in versions){
-        var transformedDoc = {};
-        var model = {};
-        transformedDoc += {"kind": "RECORD"};
-        // Create rtecord, createe binary, create acls
-         model +=mapVersionsRequiredProperties(v) ; 
-         model += mapDocument(doc) ;
-         var label = v.r_version_label[0];
-         model.versionInfo.label = label;
-         var isCurrent = Collection.contains(v.r_version_label, "CURRENT") ;
-          model.versionInfo.isCurrent = isCurrent;
-         var modify = v.r_modify_date;
-         model.lastModified.date = modify;
-         
-     0;
-      transformedDoc += {
-            "source":model,
-            "target":model
-        }; 
-         Mongo.updateOne("CCO_Delta", { "_id":  v.r_object_id }, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
-        
-         mapACLDoc(v);
-         createBinary(v);
+            var transformedDoc = {};
+            var model = {};
+            transformedDoc += {"kind": "RECORD"};
+            // Create record, create binary, create acls for each version
+             model +=mapVersionsRequiredProperties(v) ; 
+             model += mapDocument(doc) ;
+             var label = v.r_version_label[0];
+             model.versionInfo.label = label;
+             var isCurrent = Collection.contains(v.r_version_label, "CURRENT") ;
+              model.versionInfo.isCurrent = isCurrent;
+             var modify = v.r_modify_date;
+             model.lastModified.date = modify;
+             
+          transformedDoc += {
+                                "source":model,
+                                "target":model
+                            }; 
+             Mongo.updateOne("CCO_Delta", { "_id":  v.r_object_id }, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
+             mapACLDoc(v);
+             createBinary(v);
             }            
     }
-    }
+}
 
 
-transformAll();
 
-function transformAll() {
-     foreach(i, doc in allDocsNoVersion()) {
-        transformRecordOrContainer(doc);
-        mapACL(doc);
+
+function transformAllFolders() {
+     foreach(i, doc in allFolders()) {
+        transformContainer(doc);
+        mapACLFolder(doc);
         }
     }
 
@@ -62,7 +61,7 @@ function transformAll() {
 //						  FUNCTIONS AND QUERY
 //-------------------------------------------------------------------------
 
-
+// Retrieve all documents 
 function allDocsVersions(){
    var pipeline = [
   {
@@ -78,30 +77,8 @@ function allDocsVersions(){
   return Mongo.aggregate("CCO_Delta", pipeline);
 }
 
-
-// 09021748818105929999
-// function allDocsNoVersion(){
-//     var pipeline = [
-//   {
-//     "$match": {
-//       "$or": [
-//         {
-//           "original.versions": {
-//             "$size": 1
-//           }
-//         },
-//         {
-//           "kind": "Folder"
-//         }
-//       ]
-//     }
-//   }
-// ];
-//  return Mongo.find("CCO_Delta", {"_id":"09021748818105929999"});
-// }
-
-
-function allDocsNoVersion(){
+// Retrieve all Folders
+function allFolders(){
     var query = {"kind":"Folder"};
     return Mongo.find("CCO_Delta", query);
     
@@ -109,19 +86,14 @@ function allDocsNoVersion(){
 
 
 
-// Transform Record or Container
+// Transform Container
 
-function transformRecordOrContainer(doc){
+function transformContainer(doc){
     var transformedDoc = {}; 
     var model = {};
     do{
       transformedDoc['_id'] = doc._id; 
         model += mapRequiredProperties(doc); 
-        if(doc.kind  == "Document"){
-            transformedDoc += {"kind": "RECORD"};
-            model += mapDocument(doc);
-        
-        }
         if(doc.kind == "Folder"){
             transformedDoc += {"kind": "CONTAINER"};
             model += mapFolder(doc);
@@ -131,13 +103,8 @@ function transformRecordOrContainer(doc){
             "target":model
         }; 
     }fail(error){
-        // docExtractSuccess = false; 
-        // logs[] = {"datetime" : Date.now(), "message" : error, "type" : "error"}; 
+    System.print("An error has occured" :: error);
     } success {
-        // docExtractSuccess = true; 
-        // logs[] = {"datetime" : Date.now(), "message" : "Successfully transformed item from content store to UDM.", "type" : "info"}; 
-    }finally {
-        // Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
         Mongo.updateOne('CCO_Delta', {"_id" : doc._id}, 
             {"$set" : {
                 "migration": doc.migration
@@ -151,7 +118,7 @@ function transformRecordOrContainer(doc){
 
 
 
-
+// map doc for versions
 private function mapVersionsRequiredProperties(v){
         var model = {
                             "id": v.r_object_id, 
@@ -185,30 +152,30 @@ private function mapRequiredProperties(doc){
                             "id": doc.id, 
                             "parentIds": [doc.original.parent.id], 
                             "hierarchies": [doc.original.fileSystem.path],
-                              "name": {
-                              "systemName": doc.original.name.systemName, 
-                            //   "displayName": doc.original.name.systemName 
-                            },
+                             "name": {
+                                      "systemName": doc.original.name.systemName, 
+                                    //   "displayName": doc.original.name.systemName 
+                                      },
                             "contentType": {
-                              "systemName": doc.original.contentType.systemName, 
-                            //   "displayName": doc.original.contentType.systemName 
-                            },
+                                      "systemName": doc.original.contentType.systemName, 
+                                    //   "displayName": doc.original.contentType.systemName 
+                                       },
                             "states": [],
                             "created": {
-                              "date": doc.original.created.date,
-                              "principal": {
-                                "systemName": doc.original.created.by.systemName, 
-                                // "displayName": doc.original.created.by 
-                              }
-                            },
+                                  "date": doc.original.created.date,
+                                  "principal": {
+                                        "systemName": doc.original.created.by.systemName, 
+                                        // "displayName": doc.original.created.by 
+                                      }
+                                      },
                             "lastModified": {
-                              "date": doc.original.modified.date,
-                              "principal": {
-                                "systemName": doc.original.modified.by.systemName,
-                                // "displayName": doc.original.modified.by 
-                              }
-                            },
-                             "acls": [],
+                                  "date": doc.original.modified.date,
+                                  "principal": {
+                                        "systemName": doc.original.modified.by.systemName,
+                                        // "displayName": doc.original.modified.by 
+                                      }
+                                    },
+                            "acls": [],
                             "properties": doc.original.properties,
                         };
                         
@@ -226,52 +193,41 @@ private function mapObjectOptional(doc){
     if(doc.original.description){
                 model += {"description": doc.original.description};
             }
-                // "lastAccessed": {
-    //   // OPTIONAL | OBJECT
-    //   "date": "{{source.lastAccessed.date}}", // OPTIONAL | DATE
-    //   "principal": {
-    //     // OPTIONAL | OBJECT
-    //     "systemName": "{{source.lastAccessed.principal.systemName}}", // REQUIRED | STRING
-    //     "displayName": "{{source.lastAccessed.principal.displayName}}" // OPTIONAL | STRING
-    //   }
-    // },
-    // "author": {
-    //   // OPTIONAL | OBJECT
-    //   "principal": {
-    //     // REQUIRED | OBJECT
-    //     "systemName": "{{source.author.principal.systemName}}", // REQUIRED | STRING
-    //     "displayName": "{{source.author.principal.displayName}}" // OPTIONAL | STRING
-    //   }
-    // },
-    // "owner": {
-    //   // OPTIONAL | OBJECT
-    //   "principal": {
-    //     // REQUIRED | OBJECT
-    //     "systemName": "{{source.owner.principal.systemName}}", // REQUIRED | STRING
-    //     "displayName": "{{source.owner.principal.displayName}}" // OPTIONAL | STRING
-    //   }
-    // },
-    // "language": {
-    //   // OPTIONAL | OBJECT
-    //   "systemName": "{{source.language.systemName}}", // REQUIRED | STRING
-    //   "displayName": "{{source.language.displayName}}", //OPTIONAL | STRING
-    //   "masterReference": "{{_id}}" // REQUIRED | STRING | If the object is the master, reference to itself
-    // },
-    // "web": {
-    //   // OPTIONAL | OBJECT
-    //   "publishedTo": "{{source.web.publishedTo}}", // OPTIONAL | ARRAY | List of environments where the content is published to
-    //   "url": "{{source.web.url}}" // REQUIRED | STRING | Full web URL to the object
-    // },
-    // "properties": {
-    //   // OPTIONAL | OBJECT | Object containing a copy of the original object. Within target it contains the system specific or custom properties.
-    // },
-    
-    // "acls": [
-    //   // OPTIONAL | ARRAY OF _ID REFERRING TO THE ACL OBJECTS
-    // ],
-    // "auditLogs": [
-    //  // OPTIONAL | ARRAY OF _ID REFERRING TO THE AUDIT LOG OBJECTS
-    // ]
+            
+    if(doc.original.lastAccessed){
+                model += {"lastAccessed":{ "date": doc.original.lastAccessed.date ,
+                           "principal": { "systemName": doc.original.lastAccessed.principal.systemName,
+                                          "displayName": doc.original.lastAccessed.principal.displayName }
+                                }
+                         };
+             }
+    if(doc.original.author){
+                model += {"author": { "principal": { "systemName":doc.original.author.principal.systemName,
+                                                      "displayName":doc.original.author.principal.displayName }
+                                }
+                        };
+             }
+    if(doc.original.owner){
+                model += {"owner":{ "principal": { "systemName":doc.original.owner.principal.systemName,
+                                                   "displayName":doc.original.owner.principal.displayName }
+                                }
+                        };
+             }
+    if(doc.original.language){
+                model += {"language":{"systemName": doc.original.language.systemName,
+                                      "displayName": doc.original.language.displayName,
+                                      "masterReference": doc._id
+                                }
+                        };
+             }
+    if(doc.original.web){
+                model += {"web": {"publishedTo": doc.original.web.publishedTo,
+                                  "url": doc.original.web.url }
+                                  };
+            }
+    if(doc.original.auditLogs){
+                model += {"auditLogs": [] };
+            }
 return model;
 }
 
@@ -281,50 +237,61 @@ private function mapDocument(doc){
           var model = {};
           model += mapObjectOptional(doc);
           model +={ 
-             "hierarchies": [doc.original.fileSystem.path],
-             "acls": [],
-             "binaries":[],
-              "versionInfo": {
-                              "label":  null, 
-                              "minor": 1, 
-                              "major": 1, 
-                              "seriesId": doc._id, 
-                              "isCurrent": null,
-                            },
-            "lastModified": {
-              "date": "",
-              "principal": {
-                "systemName": doc.original.modified.by.systemName,
-                // "displayName": doc.original.modified.by 
-              }
-            },
-            "properties": doc.original.properties,
-            };
-              return model;
+                     "hierarchies": [doc.original.fileSystem.path],
+                     "acls": [],
+                     "binaries":[],
+                      "versionInfo": {
+                                      "label":  null, 
+                                      "minor": 1, 
+                                      "major": 1, 
+                                      "seriesId": doc._id, 
+                                      "isCurrent": null,
+                                    },
+                    "lastModified": {
+                      "date": "",
+                      "principal": {
+                        "systemName": doc.original.modified.by.systemName,
+                        // "displayName": doc.original.modified.by 
+                      }
+                    },
+                    "properties": doc.original.properties,
+             };
+    return model;
       
 }
 
 
-// Create binary Object
+// Create binary Object for each version
 private function createBinary(doc){
         var model = {};
-        // var versions = doc.modified.versions;
-        // foreach (version in versions){
           model +={ 
+          
+              "kind":"BINARY",
+              "migration": {
+                            // REQUIRED | OBJECT
+                            "id": null, // OPTIONAL | STRING 
+                            "migrate": true, // REQUIRED | BOOLEAN 
+                            "failed": false, // OPTIONAL | BOOLEAN
+                            "failedMessage": null, // OPTIONAL | STRING 
+                            "workerId": null, // OPTIONAL | STRING | 
+                            "workerStatus": null, // OPTIONAL | STRING 
+                            "retryMessage" : {}, // OPTIONAL | OBJECT 
+                            "retryTarget" : null ,// OPTIONAL | STRING  
+                          },
                 "source": {
-                        "source.extension" : doc.dos_extension,
-                        "source.rawExtension": doc.dos_extension,
-                        "source.byteSize": doc.full_content_size,
-                        "source.externalReference": doc.r_object_id,
-                        "source.localReference": doc.filevalue,
+                        "extension" : doc.dos_extension,
+                        "rawExtension": doc.dos_extension,
+                        "byteSize": doc.full_content_size,
+                        "externalReference": doc.r_object_id,
+                        "localReference": doc.filevalue,
+                        "properties": doc
                         },
-                        "properties": doc,
                  };
-             System.print(doc.r_object_id);
-  var result =  Mongo.updateOne("CCO_Delta", {"_id" :"BIN"::doc.r_object_id}, 
-            {"$set" : model},{"upsert" : true}, targetDB);
-            0;
-            Mongo.findOneAndUpdate("CCO_Delta", {"_id":doc.r_object_id}, {"$push":{"source.binaries":"BIN"::doc.r_object_id}}, {}, targetDB);
+// Create Binary object
+Mongo.updateOne("CCO_Delta", {"_id" :"BIN"::doc.r_object_id}, {"$set" : model},{"upsert" : true}, targetDB);
+
+// Find the record and update source.binaries with the id of newly created binary object
+Mongo.findOneAndUpdate("CCO_Delta", {"_id":doc.r_object_id}, {"$push":{"source.binaries":"BIN"::doc.r_object_id}}, {}, targetDB);
       
 }
 
@@ -340,161 +307,167 @@ private function mapFolder(doc){
                                   "seriesId": doc._id, 
                                   "isCurrent": true,
                                 },
-                };
+                     };
         return model;
 }
 
 
-private function mapACL(doc){
+private function mapACLFolder(doc){
 if(doc.original.permissions){
-var permissions = doc.original.permissions;
-foreach(permission in permissions){
-    var aclModel = {
- 
-    "kind":"ACL",
-    "source" : {
-        "name" : {
-            "systemName" : permission.object_name,
-            "displayName" : permission.object_name
-        },
-        "description" : null,
-        "created" : {
-            "date" : "11/04/2023",
-            "principal" : {
-                "systemName" : "",
-                "displayName" : ""
+    var permissions = doc.original.permissions;
+    foreach(permission in permissions){
+        var aclModel = {
+     
+                "kind":"ACL",
+                "source" : {
+                        "name" : {
+                            "systemName" : permission.object_name,
+                            "displayName" : permission.object_name
+                                 },
+                        "description" : null,
+                        "created" : {
+                            "date" : null,
+                            "principal" : {
+                                    "systemName" : null,
+                                    "displayName" : null
+                                     }
+                                },
+                        "lastModified" : {
+                            "date" : null,
+                            "principal" : {
+                                    "systemName" :null,
+                                    "displayName" :null
+                                    }
+                                },
+                        "permissions" : [permission.r_accessor_permit,permission.r_accessor_xpermit ],
+                        "principals" : permission.r_accessor_name,
+                        "properties" : {}
+                        },
+                        "migration" : {
+                            "id" : "1",
+                            "migrate" : true,
+                            "failed" : false,
+                            "failedMessage" : null,
+                            "workerId" : "",
+                            "workerStatus" : null,
+                            "retryMessage" : {},
+                            "retryTarget" : null,
+                            "origin" : "Test"
+                        }
+        };
+                        // create a unique id for each ACL
+                        var id= Hash.toMD5(doc._id :: permission);
+                        // Create the ACL object
+                        var result =  Mongo.findOneAndUpdate("CCO_Delta", {"_id": id},{"$set" : aclModel},{"upsert" : true}, targetDB);
+                        
+                        // Push the ID of the newly created ACL in source.acls for the related Folder
+                        var updateAcl = Mongo.findOneAndUpdate("CCO_Delta", {"_id": doc._id}, {"$push":{"source.acls":id}},{}, targetDB);
+                         0;
             }
-        },
-        "lastModified" : {
-            "date" : "12/04/2023",
-            "principal" : {
-                "systemName" : "",
-                "displayName" : ""
-            }
-        },
-        "permissions" : [permission.r_accessor_permit,permission.r_accessor_xpermit ],
-        "principals" : permission.r_accessor_name,
-        "properties" : {}
-    },
-    "migration" : {
-        "id" : "1",
-        "migrate" : true,
-        "failed" : false,
-        "failedMessage" : "",
-        "workerId" : "",
-        "workerStatus" : "",
-        "retryMessage" : {},
-        "retryTarget" : "",
-        "origin" : "Test"
     }
-};
-
-    var id= Hash.toMD5(doc._id :: permission);
-    var result =  Mongo.findOneAndUpdate("CCO_Delta", {"_id": id},{"$set" : aclModel},{"upsert" : true}, targetDB);
-    var updateAcl = Mongo.findOneAndUpdate("CCO_Delta", {"_id": doc._id}, {"$push":{"source.acls":id}},{}, targetDB);
-           0;
-
- 
-}
-}
 }
     
 private function mapACLDoc(doc){
 if(Collection.contains(doc.r_version_label,  "CURRENT")){
-var getCurrent = Mongo.findOne("CCO_Delta", {"_id":doc.r_object_id}, {}, {},{} ,sourceDB);
-var permissions = getCurrent.original.permissions;
-foreach(permission in permissions){
-    var aclModel = {
- 
-    "kind":"ACL",
-    "source" : {
-        "name" : {
-            "systemName" : permission.object_name,
-            "displayName" : permission.object_name
-        },
-        "description" : null,
-        "created" : {
-            "date" : null,
-            "principal" : {
-                "systemName" : null,
-                "displayName" : null
-            }
-        },
-        "lastModified" : {
-            "date" : null,
-            "principal" : {
-                "systemName" : null,
-                "displayName" : null
-            }
-        },
-        "permissions" : [permission.r_accessor_permit, permission.r_accessor_xpermit],
-        "principals" : permission.r_accessor_name,
-        "properties" : {}
-    },
-    "migration" : {
-        "id" : "1",
-        "migrate" : true,
-        "failed" : false,
-        "failedMessage" : null,
-        "workerId" : "",
-        "workerStatus" : null,
-        "retryMessage" : {},
-        "retryTarget" : null,
-        "origin" : "Test"
-    }
-};
-
-    var id= Hash.toMD5(doc :: Date.now ());
-    var result =  Mongo.findOneAndUpdate("CCO_Delta", {"_id": id},{"$set" : aclModel},{"upsert" : true}, targetDB);
-    var updateAcl = Mongo.findOneAndUpdate("CCO_Delta", {"_id": getCurrent._id}, {"$push":{"source.acls":id}},{}, targetDB);
-        0;
+    var getCurrent = Mongo.findOne("CCO_Delta", {"_id":doc.r_object_id}, {}, {},{} ,sourceDB);
+    var permissions = getCurrent.original.permissions;
+    foreach(permission in permissions){
+            var aclModel = {
+         
+                    "kind":"ACL",
+                    "source" : {
+                                "name" : {
+                                    "systemName" : permission.object_name,
+                                    "displayName" : permission.object_name
+                                },
+                                "description" : null,
+                                "created" : {
+                                    "date" : null,
+                                    "principal" : {
+                                        "systemName" : null,
+                                        "displayName" : null
+                                    }
+                                },
+                                "lastModified" : {
+                                    "date" : null,
+                                    "principal" : {
+                                        "systemName" : null,
+                                        "displayName" : null
+                                    }
+                                },
+                                "permissions" : [permission.r_accessor_permit, permission.r_accessor_xpermit],
+                                "principals" : permission.r_accessor_name,
+                                "properties" : {}
+                         },
+                                "migration" : {
+                                    "id" : "1",
+                                    "migrate" : true,
+                                    "failed" : false,
+                                    "failedMessage" : null,
+                                    "workerId" : "",
+                                    "workerStatus" : null,
+                                    "retryMessage" : {},
+                                    "retryTarget" : null,
+                                    "origin" : "Test"
+                                }
+                    };
+            // create a unique id 
+            var id= Hash.toMD5(doc :: Date.now ());
+             // create a ACL object for each current version of a doc
+            var result =  Mongo.findOneAndUpdate("CCO_Delta", {"_id": id},{"$set" : aclModel},{"upsert" : true}, targetDB);
+            // Find each current version of a doc associated with the ACL and update source.acls with the ACL id
+            var updateAcl = Mongo.findOneAndUpdate("CCO_Delta", {"_id": getCurrent._id}, {"$push":{"source.acls":id}},{}, targetDB);
+                0;
     }
 }
 if(!Collection.contains(doc.r_version_label,  "CURRENT")){
     var aclModel = {
  
-    "kind":"ACL",
-    "source" : {
-        "name" : {
-            "systemName" : doc.acl_name,
-            "displayName" : doc.acl_name
-        },
-        "description" : null,
-        "created" : {
-            "date" : null,
-            "principal" : {
-                "systemName" : null,
-                "displayName" : null
-            }
-        },
-        "lastModified" : {
-            "date" : null,
-            "principal" : {
-                "systemName" :null,
-                "displayName" : null
-            }
-        },
-        "permissions" : [doc.group_permit,  doc.world_permit],
-        "principals" : [doc.acl_domain],
-        "properties" : {}
-    },
-    "migration" : {
-        "id" : "1",
-        "migrate" : true,
-        "failed" : false,
-        "failedMessage" : null,
-        "workerId" : null,
-        "workerStatus" : null,
-        "retryMessage" : {},
-        "retryTarget" : null,
-        "origin" : "Test"
-    }
-};
+                "kind":"ACL",
+                "source" : {
+                    "name" : {
+                        "systemName" : doc.acl_name,
+                        "displayName" : doc.acl_name
+                    },
+                    "description" : null,
+                    "created" : {
+                        "date" : null,
+                        "principal" : {
+                            "systemName" : null,
+                            "displayName" : null
+                        }
+                    },
+                    "lastModified" : {
+                        "date" : null,
+                        "principal" : {
+                            "systemName" :null,
+                            "displayName" : null
+                        }
+                    },
+                    "permissions" : [doc.group_permit,  doc.world_permit],
+                    "principals" : [doc.acl_domain],
+                    "properties" : {}
+                },
+                "migration" : {
+                    "id" : "1",
+                    "migrate" : true,
+                    "failed" : false,
+                    "failedMessage" : null,
+                    "workerId" : null,
+                    "workerStatus" : null,
+                    "retryMessage" : {},
+                    "retryTarget" : null,
+                    "origin" : "Test"
+                }
+        };
+    // create a unique id 
     var id= Hash.toMD5(doc::doc.object_name);
+    // create a ACL object for each non current version of a doc
     var result =  Mongo.findOneAndUpdate("CCO_Delta", {"_id": id},{"$set" : aclModel},{"upsert" : true}, targetDB);
+    // Find each non current version of a doc associated with the ACL and update source.acls with the ACL id
     var updateAcl = Mongo.findOneAndUpdate("CCO_Delta", {"_id": doc.r_object_id}, {"$push":{"source.acls":id}},{}, targetDB);
           0;
- }
+     }
 }
    
 
