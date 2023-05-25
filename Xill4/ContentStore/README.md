@@ -1,4 +1,8 @@
-# Script Documentation
+# Data Transformation Script UDM to ContentStore
+
+This repository contains a data transformation script that facilitates the transformation of documents and folders between two MongoDB databases. The script performs various operations to transform the data and migrate it to a target database.
+The data used for this has been extracted from Documentum. To make it work with other source systems you will need to adjust it accordingly.
+
 
 ## Setup
 - Set the `targetDBName` variable to the name of the target database.
