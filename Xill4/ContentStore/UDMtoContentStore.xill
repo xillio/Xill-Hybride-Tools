@@ -19,7 +19,7 @@ transformAllVersions();
 
 function transformAllVersions() {
     foreach(i, doc in allDocsVersions()) {
-    var versions = doc.original.versions; 
+    var versions = doc.modified.versions; 
     foreach(v in versions){
         var transformedDoc = {};
         var model = {};
@@ -41,7 +41,7 @@ function transformAllVersions() {
         }; 
          Mongo.updateOne("CCO_Delta", { "_id":  v.r_object_id }, {"$set" : transformedDoc }, {"upsert" : true}, targetDB) ; 
         
-           mapACLDoc(v);
+         mapACLDoc(v);
          createBinary(v);
             }            
     }
@@ -283,7 +283,7 @@ private function mapDocument(doc){
           model +={ 
              "hierarchies": [doc.original.fileSystem.path],
              "acls": [],
-              "binaries":[ "BIN"::doc._id],
+             "binaries":[],
               "versionInfo": {
                               "label":  null, 
                               "minor": 1, 
@@ -318,13 +318,14 @@ private function createBinary(doc){
                         "source.externalReference": doc.r_object_id,
                         "source.localReference": doc.filevalue,
                         },
-                        "properties": doc.version,
+                        "properties": doc,
                  };
              System.print(doc.r_object_id);
   var result =  Mongo.updateOne("CCO_Delta", {"_id" :"BIN"::doc.r_object_id}, 
             {"$set" : model},{"upsert" : true}, targetDB);
             0;
-        //   }
+            Mongo.findOneAndUpdate("CCO_Delta", {"_id":doc.r_object_id}, {"$push":{"source.binaries":"BIN"::doc.r_object_id}}, {}, targetDB);
+      
 }
 
 // Map folder 
