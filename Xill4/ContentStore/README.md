@@ -66,7 +66,7 @@ The data used for this has been extracted from Documentum. To make it work with 
 ### `createBinary(doc)`
 - Creates a binary object for each version.
 - Updates the binary object in the target database.
-- Updates the source document with the ID of the created binary object.
+- Updates the target document with the ID of the created binary object.
 
 ### `mapFolder(doc)`
 - Maps the folder properties.
@@ -74,9 +74,9 @@ The data used for this has been extracted from Documentum. To make it work with 
 
 ### `mapACLFolder(doc)`
 - Maps the ACL properties for folders.
-- Creates ACL objects and updates the source folder with the ACL IDs.
+- Creates ACL objects and updates the target folder with the ACL IDs.
 
 ### `mapACLDoc(doc)`
 - Maps the ACL properties for documents.
-- Creates ACL objects and updates the source document with the ACL IDs.
+- Creates ACL objects and updates the target document with the ACL IDs.
 
