@@ -1,761 +1,324 @@
 use Assert, Collection, ContentType, Date, Decode, Document, Encode, Excel, ExifTool, File, Hash, MariaDB, Math, Mongo, MSSQL, MySQL, Oracle, Properties, SQLite, Stream, String, System, Template, Web, XML, XURL, Postgres;
 
-/*
-This robot transforms a Sharepoint (on premises) export to a Xill4 content store.
-Data model documentation:
+//-------------------------------------------------------------------------
+//						  SETUP
+//-------------------------------------------------------------------------
 
-https://migrate.xill.io/#/content-store-data-model-schemas
+var targetDBName = "";
+var targetDB = Mongo.connect(targetDBName);
+var sourceDB  = Mongo.connect("");
 
-*/
+//-------------------------------------------------------------------------
+//						  MAIN
+//-------------------------------------------------------------------------
 
-include lib.util.Mongo as MongoUtil;
+transformAll();
 
-
-var collectionName = Properties.get("udm.collection");
-
-var host = Properties.get("udm.host");
-var port = Properties.get("udm.port");
-var targetDBName = "contentstore_sharepointonprem";
-var targetDB = Mongo.connect(targetDBName,host,port);
-var sourceDB = MongoUtil->connect();
-var nct = {"noCursorTimeout":1,"batchSize":100};
-
-var documentContentType = "0x0101";//"2fa9fbad775a353a2d6efc480c8a9940";//"0x0101";
-var folderContentType = "0x0120";
-
-transform();
-
-function convertFromExporter(object) {
-    if(object.contentType=="SPWeb") {
-        transformSite(object);
-    } else if(object.contentType=="SPItem"&&object.original.folder==null) {
-        transformItem(object);
-    } else if(object.contentType=="SPItem"&&object.original.folder!=null) {
-        transformFolder(object);
-    } else if(object.contentType=="SPList") {
-        transformList(object);
-    } else {
-        System.print("Content type " :: object.contentType :: " currently not supported in xill4 contentstore transformation");
-    }
-}
-
-function transform() {
-    System.print("Starting transformation to xill4 database");
-    
-    // transform list items and document to RECORD, where document is also transformed to BINARY
-    var items = Mongo.find(collectionName,{"contentType":"SPItem","original.folder":null},{},{},nct,sourceDB);
-    var count = Mongo.count(collectionName,{"contentType":"SPItem","original.folder":null},sourceDB);
-    System.print(count :: " items");
-    foreach(i,item in items) {
-        do{System.setProgress(i/count);}
-        transformItem(item);
-    }
-    break;
-    
-    // transform folder to CONTAINER even though it's SPItem in source
-    var folders = Mongo.find(collectionName,{"contentType":"SPItem","original.folder":{"$ne":null}},{},{},nct,sourceDB);
-    count = Mongo.count(collectionName, {"contentType":"SPItem","original.folder":{"$ne":null}},sourceDB);
-    System.print(count :: " folders");
-    foreach(i,folder in folders) {
-        do{System.setProgress(i/count);}
-        transformFolder(folder);
-    }
-    
-    // transform list to CONTAINER
-    var lists = Mongo.find(collectionName,{"contentType":"SPList"},{},{},nct,sourceDB);
-    count = Mongo.count(collectionName,{"contentType":"SPList"},sourceDB);
-    System.print(count :: " lists");
-    foreach(i,list in lists) {
-        do{System.setProgress(i/count);}
-        if(list.original.properties.BaseType=="DocumentLibrary") {
-            0;
-        } else {
-            0;
+function transformAll() {
+    foreach(i, grouping in groupDocByVersion()) {
+        var documents = grouping.docs; 
+        var lenTest = Collection.length(documents) ;
+        if(lenTest >1) {
+            null ; 
         }
-        transformList(list);
+        var currentDocument = documents[Collection.length(documents) -1] ; 
+        transformRecordOrContainer(currentDocument, documents);
     }
-    
-    // transform site to CONTAINER
-    var sites = Mongo.find(collectionName,{"contentType":"SPWeb"},{},{},nct,sourceDB);
-    count = Mongo.count(collectionName,{"contentType":"SPWeb"},sourceDB);
-    System.print(count :: " sites");
-    foreach(i,site in sites) {
-        do{System.setProgress(i/count);}
-        transformSite(site);
+}
+
+//-------------------------------------------------------------------------
+//						  FUNCTIONS AND QUERY
+//-------------------------------------------------------------------------
+
+//Function that will retrieve ACLS
+
+function getAcls(_id){
+    var aclsResp = [];
+    var query = {"_id":_id};
+    var projection = {
+        "source.acls" : 1,
+    };
+    var resp = Mongo.findOne("documents", query, projection);
+    if(resp){
+    foreach(res in resp.source.acls)
+    {
+        var query = {"_id":res};
+        var response = Mongo.findOne("documents", query);
+        var aclsResponse = response.source;
+        aclsResp[] = aclsResponse;
     }
-    
-    System.print("DONE");
+    }
+    0;
+    return aclsResp;
 }
 
-function transformSite(siteInfo) {
-    var target = transformDefault(siteInfo);
-    target.kind = "CONTAINER"; // REQUIRED | STRING | OPTIONS: ["RECORD", "CONTAINER"]
-    target.source.contentType = {
-      // REQUIRED | OBJECT
-      "systemName": "Web", // REQUIRED | STRING | DESCRIPTION: System name of the content type of the object
-      "displayName": "Site" // OPTIONAL | STRING | DESCRIPTION: Display name of the content type of the object
+//Function that will retrieve BINARY info of given RECORD
+
+function getBinaryInfo(_id) {   
+    var query = {"_id":"BIN"::_id};
+    var projection = {
+        "source.extension" : 1,
+        "source.rawExtension": 1,
+        "source.byteSize":1,
+        "source.externalReference":1,
+        "source.localReference":1
     };
-    
-    Mongo.replaceOne(collectionName, {"_id":target._id},target,{"upsert":true},targetDB);
+    var binary = Mongo.findOne("documents", query, projection);
+    return binary ; 
 }
 
-function transformFolder(item) {
-    var target = transformDefault(item);
-    target.kind = "CONTAINER"; // REQUIRED | STRING | OPTIONS: ["RECORD", "CONTAINER"]
-    target.source.contentType = {
-      // REQUIRED | OBJECT
-      "systemName": "Item", // REQUIRED | STRING | DESCRIPTION: System name of the content type of the object
-      "displayName": "Folder" // OPTIONAL | STRING | DESCRIPTION: Display name of the content type of the object
-    };
-    
-    Mongo.replaceOne(collectionName, {"_id":target._id},target,{"upsert":true},targetDB);
+// //Function that will retrieve all versions
+function groupDocByVersion(){
+    var pipeline = [
+    {"$match" : {"kind" : {"$in" : ["RECORD", "CONTAINER"] }}},
+    {"$group": {
+        "_id" : "$source.versionInfo.seriesId",
+        "docs" : {"$push" : "$$ROOT"},
+        "count": {"$sum" : 1}
+    }},
+    {"$sort" : {"source.versionInfo.label" : 1} }
+] ; 
+return  Mongo.aggregate("documents", pipeline, {}, sourceDB) ;
 }
 
-function transformList(item) {
-    var target = transformDefault(item);
-    target.kind = "CONTAINER"; // REQUIRED | STRING | OPTIONS: ["RECORD", "CONTAINER"]
-    target.source.contentType = {
-      // REQUIRED | OBJECT
-      "systemName": "List", // REQUIRED | STRING | DESCRIPTION: System name of the content type of the object
-      "displayName": "List" // OPTIONAL | STRING | DESCRIPTION: Display name of the content type of the object
-    };
-    
-    Mongo.replaceOne(collectionName, {"_id":target._id},target,{"upsert":true},targetDB);
-}
 
-function transformItem(item) {
-    var target = transformDefault(item);
-    target.kind = "RECORD"; // REQUIRED | STRING | OPTIONS: ["RECORD", "CONTAINER"]
-    target.source.contentType = {
-      // REQUIRED | OBJECT
-      "systemName": "Item", // REQUIRED | STRING | DESCRIPTION: System name of the content type of the object
-      "displayName": "Item" // OPTIONAL | STRING | DESCRIPTION: Display name of the content type of the object
-    };
-    if(item.original.file&&item.original.file.size>0) {
-        var binaryId = "BIN_" :: item._id;
-        target.source.binaries = [binaryId];
-        var binary = transformBinary(item,binaryId);
-        Mongo.replaceOne(collectionName, {"_id":target._id},target,{"upsert":true},targetDB);
-    } else {
-        if(item.original.attachments) {
-            System.print("Attachment found. These are not mapped to a binary yet\r\n" :: item._id);
-            target.source.properties.attachments = item.original.attachments;
+
+
+// Transform Document and Folder
+
+function transformRecordOrContainer(doc,versionDocs){
+    var logs = []; 
+    var transform = mapMigTransformDecorator();
+    var load = mapMigLoadDecorator();
+    var docExtractSuccess = false; 
+    var transformedDoc = {}; 
+    var model = {};
+    do{
+       transformedDoc['_id'] = doc._id; 
+        model += mapRequiredProperties(doc,versionDocs); 
+        if(doc.kind  == "RECORD"){
+            transformedDoc += {"kind": "Document"};
+            model += mapDocument(doc, versionDocs);
         }
+        if(doc.kind  == "CONTAINER"){
+            transformedDoc += {"kind": "Folder"};
+            model += mapFolder(doc, versionDocs);
+        }
+        transformedDoc += {
+            "original": model,
+            "modified": model
+        }; 
+    }fail(error){
+        docExtractSuccess = false; 
+        logs[] = {"datetime" : Date.now(), "message" : error, "type" : "error"}; 
+    } success {
+        docExtractSuccess = true; 
+        logs[] = {"datetime" : Date.now(), "message" : "Successfully transformed item from content store to UDM.", "type" : "info"}; 
+    }finally {
+        Mongo.updateOne('documents', {"_id" : doc._id}, {"$set" : transformedDoc, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
+        Mongo.updateOne('documents', {"_id" : doc._id}, 
+            {"$set" : {
+                "migration.export.document" : docExtractSuccess,
+                "migration.load" : load,
+                "migration.transform" : transform
+            } }, {"upsert" : true}, targetDB) ; 
     }
-    Mongo.replaceOne(collectionName, {"_id":target._id},target,{"upsert":true},targetDB);
-    
+    return transformedDoc;
 }
 
-function transformBinary(item,binaryId) {
-    foreach(i, attachmentUrl in item.original.attachments) {
-        System.print("Attachment found. These are not mapped yet\r\n" :: item._id);
+// map common for folders and records
+
+private function mapRequiredProperties(doc,versionDocs){
+    var commonPropsModel = {
+                 "name" :{
+                    "systemName" : doc.source.name.systemName,
+                    "displayName" : doc.source.name.systemName,
+                    "normalized" : String.toLower(doc.source.name.systemName)
+                },
+                "parent" : {
+                    "id": doc.source.parentIds,
+                    "path":doc.source.hierarchies[0],
+                    "ancestors":doc.source.parentIds
+                },
+                "contentType":{
+                    "systemName":doc.source.contentType.systemName,
+                    "displayName":doc.source.contentType.systemName
+                },
+                 "created" : {
+                    "date" : doc.source.created.date,
+                    "by" : doc.source.created.principal.systemName,
+                },
+                 "modified" : {
+                    "date" : doc.source.lastModified.date,
+                    "by" : doc.source.lastModified.principal.systemName
+                },
+                  "fileSystem":{
+                     "id" : doc.source.id,
+                    "path" : doc.source.hierarchies[0],
+                    "depth" : ""
+                },
+                 "permissions" : mapObjectACL(doc._id),
+            };
+    return commonPropsModel ; 
+}
+
+// map optionals for folders and records
+
+private function mapObjectOptional(doc){
+    var model = {};
+        if(doc.source.properties.succinctProperties["cmis:description"]){
+                model += {"description":{"description":doc.source.properties.succinctProperties["cmis:description"]}};
+            }
+            if(doc.source.ancestors){
+                model += {"ancestors":{"ancestors":doc.source.ancestors}};
+            }
+            if(doc.source.states){
+                model += {"states":[doc.source.states]};}
+            if(doc.source.lastAccessed){
+                model += {"lastAccessed": {"date": doc.source.lastAccessed.date}, 
+                            "principal": {
+                                "systemName": doc.source.lastAccessed.principal.systemName, 
+                                "displayName": doc.source.lastAccessed.principal.displayName
+                            }};
+            }
+            if(doc.source.author){
+                model += {"author":{"systemName": doc.source.author.principal.systemName,
+                                     "displayName": doc.source.author.principal.displayName}};
+            }
+            if(doc.source.owner){
+                model += {"owner": {"systemName": doc.source.owner.principal.systemName,
+                                       "displayName": doc.source.owner.principal.displayName}};
+            }
+            if(doc.source.language){
+                model += {"language": {"systemName": doc.source.language.systemName,
+                          "displayName": doc.source.language.displayName,
+                          "masterReference": doc._id // REQUIRED | STRING | If the object is the master, reference to itself
+                          }};
+            }
+            if(doc.source.web){
+                model += {  "web": {"publishedTo": doc.source.web.publishedTo,
+                                     "url": doc.source.web.url // REQUIRED | STRING | Full web URL to the object
+                                     }};
+            }
+            if(doc.source.acls){
+                model += { "acls": [doc.source.acls] };
+            }
+            if(doc.source.auditLogs){
+                model += {"auditLogs": [doc.source.auditLogs] };
+            }
+    return model ;
+}
+
+// Map object ACLS
+
+private function mapObjectACL(_id){
+    var acls = getAcls(_id);
+    var commonAclModel = [];
+    foreach(acl in acls){
+        var principals = acl.principals;
+        foreach(principal in principals){
+             commonAclModel[] = {
+                        "principal" : {
+                            "principalId" : principal.systemName
+                        },
+                        "permissions" : acl.permissions
+                };
+             }
     }
-    var target ={
-        "_id":binaryId,
-        "kind":"BINARY",
-        "source":{},
-        "migration":{}
-    };
-    
-    target.source.name = {
-          // OPTIONAL | OBJECT
-          "systemName": item.original.file.name ,// REQUIRED | STRING
-          "displayName": item.original.file.name // OPTIONAL | STRING
+    return commonAclModel;
+}
+
+// Transform versions 
+
+private function mapVersions(versionDocs){
+    var logs = [];
+    var update = {}; 
+    var seriesId = versionDocs[0].source.versionInfo.seriesId; 
+    do{
+        var versionArr = [] ; 
+        foreach(i, version in versionDocs){
+            versionArr[] = mapVersion(version) ; 
+            null ; 
+        }
+        return versionArr ;    
+    }fail(error){
+        update['migration.export.versions'] = false ; 
+        logs[] = {"datetime" : Date.now(), "message" : error, "type" : "error"}; 
+    } success {
+        update['migration.export.versions'] = true ; 
+        logs[] = {"datetime" : Date.now(), "message" : "Successfully exported the versions from content store to UDM.", "type" : "info"}; 
+    }finally {
+        Mongo.updateOne('documents', {"_id" : seriesId}, {"$set" : update, "$push" : {"migration.logs" : {"$each" : logs}} }, {"upsert" : true}, targetDB) ; 
+    }
+}
+
+// Map object for versions
+
+private function mapVersion(version){
+    var versionModel = {}  ; 
+    var binaryPath = null ; 
+    do{
+        versionModel += version.source.properties;
+        var binary = getBinaryInfo(version._id); 
+        binaryPath = binary.source.localReference;
+    }fail(error){
+        System.print("An error was encountered: " :: error, "ERROR") ; 
+    }success{
+        versionModel += {"binaryPath" : binaryPath} ; 
+        System.print("Successfully added binary path to version model for id " :: version._id, "DEBUG") ; 
+    }
+    finally{
+    }
+    return versionModel ; 
+}
+
+
+private function mapDocument(doc, versionDocs){
+      var model = {};
+      var binary = getBinaryInfo(doc._id); // make sure itś an array
+        model +={ 
+             "file":{
+                    "extension":binary.source.extension, // plug in ibinary info
+                    "rawExtension":binary.source.rawExtension, // info binary
+                    "size":binary.source.byteSize // binary info
+                },
+                "mimeType":{
+                    "type":doc.source.properties.succinctProperties["cmis:contentStreamMimeType"]
+                },
+                "versions": mapVersions(versionDocs),
+                "properties": [doc.source.properties, mapObjectOptional(doc)]
+            };
+        return model;
+}
+
+private function mapFolder(doc, versionDocs){
+    var model = {}; 
+     model += mapObjectOptional(doc) ; 
+        model += {
+                 "container":{
+                     "hasChildren": null,
+                 },
+                 "properties": doc.source.properties
+            };
+     return model;
+}
+
+
+private function mapMigTransformDecorator(){
+    var migDecorator = {
+            "createModel" : false
         };
-        //"type": "{{source.type}}", // OPTIONAL | STRING | Field to specify a certain binary type, for example if the binary is a rendition.
-    target.source.extension = item.original.file.extension; // REQUIRED | STRING
-    target.source.rawExtension = item.original.file.rawExtension; // REQUIRED | STRING
-    target.source.byteSize = item.original.file.size; // REQUIRED | NUMBER
-    target.source.externalReference = "externalReference is not filled in a the moment"; // OPTIONAL | STRING | DESCRIPTION: Reference where the binary resides, this can be a URL or a path to a network drive
-    target.source.localReference = "binary is currently not in GridFS"; // OPTIONAL | STRING | DESCRIPTION: Reference to the local GridFS copy of the binary
-    /*target.source.hash = {
-          // OPTIONAL | OBJECT REQUIRES AT LEAST ONE OF THE KEYS: ["md5", "sha1", "sha256", "sha512"]
-          "md5": "{{source.hash.md5}}", // OPTIONAL | STRING
-          "sha1": "{{source.hash.sha1}}", // OPTIONAL | STRING
-          "sha256": "{{source.hash.sha256}}", // OPTIONAL | STRING
-          "sha512": "{{source.hash.sha512}}" // OPTIONAL | STRING
-        },*/
-    target.source.properties = item.original.properties;
-    target.source.properties.ancestors = item.original.parent.ancestors;
-          // OPTIONAL | OBJECT | DESCRIPTION: Object containing a copy of the original object
-        
-    // target.target =  {
-    //     // OPTIONAL | OBJECT | FILLING IN ONE OR MORE KEY(S) TRIGGERS VALIDATION AS SOURCE OBJECT
-    //   };
-    target.migration = {
-        // REQUIRED | OBJECT
-        "id": item._id, // OPTIONAL | STRING | The id of document after loading into the target repository.
-        "migrate": true, // REQUIRED | BOOLEAN | Determines if the object will be migrated. If false, the object will not be migrated.
-        //"failed": false, // OPTIONAL | BOOLEAN
-        //"failedMessage": "", // OPTIONAL | STRING || Holds the message related to to failed state (error message)
-        //"retryMessage" : {}, // OPTIONAL | OBJECT | A copy of the incoming message from the component that generated an error.
-        //"retryTarget" : "", // OPTIONAL | STRING  | The name of the component to target when retrying (depends on the targeted flow).
-        "origin" : "Sharepoint2013" // REQUIRED | STRING | Specifies the origin of the document in the Content Store
-      };
-      return target;
+    return migDecorator; 
 }
 
-function transformNewFolder(properties) {
-    var mandatoryProperties = [
-        "_id","sourceId","parentId","name"
-    ];
-    foreach(property in mandatoryProperties) {
-        if(!Collection.containsKey(properties,property)) {
-            Assert.error("Can not transform document, because property "::property ::" is missing");
-        }
-    }
-    
-    properties.name = validSPName(properties.name);
-    
-    var folder = {
-        "_id" : properties._id,
-        "kind" : "CONTAINER",
-        "migration" : {
-            "migrate" : true,
-            "origin" : "Transformation"
-        },
-        "source" : {
-            "id" : properties._id,
-            "parentIds" : [
-                properties.parentId
-            ],
-            "hierarchies" : [],
-            "name" : {
-                "systemName" : properties.name
-            },
-            "contentType" : {
-                "systemName" : folderContentType,
-                "displayName" : "Folder"
-            },
-            "versionInfo" : {
-                "label" : "1.0",
-                "major" : 1,
-                "minor" : 0,
-                "seriesId" : properties._id
-            },
-            "states" : [],
-            "properties" : {}
-        },
-        "target" : {
-            "id" : properties._id,
-            "parentIds" : [
-                properties.parentId
-            ],
-            "hierarchies" : [],
-            "name" : {
-                "systemName" : properties.name
-            },
-            "contentType" : {
-                "systemName" : folderContentType,
-                "displayName" : "Folder"
-            },
-            "versionInfo" : {
-                "label" : "1.0",
-                "major" : 1,
-                "minor" : 0,
-                "seriesId" : properties._id
-            },
-            "states" : [],
-            "properties" : {}
-        }
-    };
-    if(properties.lastModified) {
-        folder.target.lastModified = {"date" : properties.lastModified};
-    }
-    if(properties.created) {
-        folder.target.created = {"date" : properties.created};
-    }
-    
-    return folder;
-}
-
-function transformNewDocument(properties) {
-    var mandatoryProperties = [
-        "_id","sourceId","parentId","name","localPath"
-    ];
-    foreach(property in mandatoryProperties) {
-        if(!Collection.containsKey(properties,property)) {
-            Assert.error("Can not transform document, because property "::property ::" is missing");
-        }
-    }
-    properties.name = validSPName(properties.name);
-    var binaryId = "BIN_"::properties._id;
-    var document = {
-        "_id" : properties._id,
-        "kind" : "RECORD",
-        "source" : {
-            "id" : properties.sourceId,
-            "parentIds" : [properties.parentId],
-            "hierarchies" : ["/"],
-            "name" : {
-                "systemName" : properties.name
-            },
-            "contentType" : {
-                "systemName" : documentContentType
-            },
-            "versionInfo" : {
-                "minor" : 0,
-                "major" : 1,
-                "seriesId" : properties._id
-            },
-            "states" : [],
-            "binaries" : [binaryId],
-            "properties" :{}
-        },
-        "target" : {
-            "id" : properties._id,
-            "parentIds" : [properties.parentId],
-            "hierarchies" : ["/"],
-            "name" : {
-                "systemName" : properties.name
-            },
-            "contentType" : {
-                "systemName" : documentContentType
-            },
-            "versionInfo" : {
-                "minor" : 0,
-                "major" : 1,
-                "seriesId" : properties._id
-            },
-            "states" : [],
-            "binaries" : [binaryId],
-        "properties" :{},
-            
-        },
-        "migration" : {
-            "migrate" : true,
-            "origin" : "Transformation"
-        }
-        
-    };
-    //Mongo.replaceOne(collectionName, {"_id":document._id},document,{"upsert":true}, migrationDB);
-    var extension;
-    if(String.contains(properties.name,".")) {
-        extension = String.replace(properties.name,".*\\.","");
-    } else {
-        extension = "";
-    }
-    
-    var size = File.getSize(properties.localPath);
-    var binary = {
-        "_id" : binaryId,
-        "kind": "BINARY",
-        "source" : {
-            "name" : {
-                "systemName" : properties.name
-            },
-            "rawExtension" : extension,
-            "extension" : extension,
-            "byteSize" : size,
-            "localReference" : properties.localPath
-        },
-        "target" : {
-            "name" : {
-                "systemName" : properties.name
-            },
-            "rawExtension" : extension,
-            "extension" : extension,
-            "byteSize" : size,
-            "localReference" : properties.localPath
-        },
-        "migration" : {
-            "migrate" : true,
-            "origin" : "Transformation"
-        }
-    };
-    return {
-        "record" : document,
-        "binary" : binary
-    };
+private function mapMigLoadDecorator(){
+    var migDecorator = {
+            "migrate":false,
+            "status":null,
+            "target":null,
+            "batch": null
+    }; 
+    return migDecorator; 
 }
 
 
-function removeEmptyDateFields(target) {
-    if(!target.source.created.date) {
-        Collection.remove(target.source.created, "date");
-    }
-    if(!target.source.created.principal||target.source.created.principal.systemName=="UNKNOWN") {
-        Collection.remove(target.source.created, "principal");
-    }
-    if(!target.source.lastModified.date) {
-        Collection.remove(target.source.lastModified, "date");
-    }
-    if(!target.source.lastModified.principal||target.source.lastModified.principal.systemName=="UNKNOWN") {
-        Collection.remove(target.source.lastModified, "principal");
-    }
-    if(!target.source.created.date) {
-        if(target.source.created.principal) {
-            System.print("Created principal can not be set without date","debug");
-        }
-        Collection.remove(target.source,"created");
-    }
-    if(!target.source.lastModified.date) {
-        if(target.source.lastModified.principal) {
-            System.print("lastModified principal can not be set without date");
-        }
-        Collection.remove(target.source,"lastModified");
-    }
-}
-
-function transformDefault(item) {
-    var target = {
-      "_id": item._id, // REQUIRED | STRING | DESCRIPTION: A generated id based on objects metadata, must be unique
-      "source" : {} // REQUIRED | OBJECT | DESCRIPTION: Object containing the data from the source repository
-    };
-      
-    target.source.id = item._id;  // REQUIRED | STRING | DESCRIPTION: The id of the object as it is in the source system.
-    target.source.parentIds = []; // REQUIRED | ARRAY |
-    if(item.original.parent.id) { // DESCRIPTION: The parent source ids of the object. If there is no parent, the value should be an empty array
-                                  // The parent should also be stored in the database. If for extraction reasons the parent is not stored in the database (in case of the root for example), it should be treated as if there is no parent.
-        target.source.parentIds = [item.original.parent.id];
-    }
-    // REQUIRED | ARRAY | DESCRIPTION: Path notation of the location of the object. Always starts with a forward slash.
-    var fullUrl = item.original.sp.url;
-    if(!fullUrl&&item.contentType=="SPWeb") {
-        fullUrl = item.original.sp.siteUrl;
-    } else if(!fullUrl) {
-        fullUrl = getUrl(item);
-    } else {
-        0;
-    }
-    
-    var hierarchy = String.replace(fullUrl,"^https?:/","");
-    target.source.hierarchies = [hierarchy];
-    
-    target.source.name = {
-      // REQUIRED | OBJECT
-      "systemName": item.original.name.systemName, // REQUIRED | STRING
-      "displayName": item.original.name.displayName // OPTIONAL | STRING
-    };
-    if(!item.original.name.displayName) {
-        if(item.original.data&&item.original.data.title) {
-            target.source.name.displayName = item.original.data.title;
-        } else if(item.original.data&&item.original.data.properties&&item.original.data.properties.TitleUrl&&item.original.data.properties.TitleUrl.value) {
-            target.source.name.displayName = String.replace(item.original.data.properties.TitleUrl.value,".*/","");
-        } else {
-            Collection.remove(target.source.name,"displayName");
-        }
-    }
-    //target.description = null, // OPTIONAL | STRING
-    target.source.versionInfo = {
-      // REQUIRED | OBJECT
-      //"label": "{{source.versionInfo.label}}", // OPTIONAL | STRING | DESCRIPTION: Version label of the object, if non existing in the source repository set to ‘1.0’.
-      "minor": 1, // REQUIRED | NUMBER
-      "major": 1, // REQUIRED | NUMBER
-      "seriesId": item._id, // REQUIRED | STRING | An identifier that represents the complete set of versions
-    };
-    target.source.states = []; // REQUIRED | ARRAY | DESCRIPTION: One or more state values, think hidden, archived, deleted, etc. If none, provide an empty list
-    target.source.created = {
-    // OPTIONAL | OBJECT
-        "date": item.original.created.date, // REQUIRED | DATE
-        "principal": {
-    // OPTIONAL | OBJECT
-            "systemName": item.original.created.by, // REQUIRED | STRING
-            "displayName": item.original.created.displayName // OPTIONAL | STRING
-        }
-    };
-    
-    target.source.lastModified = {
-        // OPTIONAL | OBJECT
-        "date": item.original.modified.date, // REQUIRED | DATE
-        "principal": {
-            // OPTIONAL | OBJECT
-            "systemName": item.original.modified.by, // REQUIRED | STRING
-            "displayName": item.original.modified.displayName // OPTIONAL | STRING
-        }
-    };
-    removeEmptyDateFields(target);
-    /*target.lastAccessed = {
-          // OPTIONAL | OBJECT
-          "date": "{{source.lastAccessed.date}}", // OPTIONAL | DATE
-          "principal": {
-            // OPTIONAL | OBJECT
-            "systemName": "{{source.lastAccessed.principal.systemName}}", // REQUIRED | STRING
-            "displayName": "{{source.lastAccessed.principal.displayName}}" // OPTIONAL | STRING
-          }
-        };*/
-    /*target.author =  {
-          // OPTIONAL | OBJECT
-          "principal": {
-            // REQUIRED | OBJECT
-            "systemName": "{{source.author.principal.systemName}}", // REQUIRED | STRING
-            "displayName": "{{source.author.principal.displayName}}" // OPTIONAL | STRING
-          }
-        },*/
-    /*target.owner = {
-          // OPTIONAL | OBJECT
-          "principal": {
-            // REQUIRED | OBJECT
-            "systemName": "{{source.owner.principal.systemName}}", // REQUIRED | STRING
-            "displayName": "{{source.owner.principal.displayName}}" // OPTIONAL | STRING
-          }
-        };*/
-    /*var target.language = {
-          // OPTIONAL | OBJECT
-          "systemName": "{{source.language.systemName}}", // REQUIRED | STRING
-          "displayName": "{{source.language.displayName}}", //OPTIONAL | STRING
-          "masterReference": "{{_id}}" // REQUIRED | STRING | DESCRIPTION: If the object is the master, reference to itself
-        },*/
-    var siteUrl = item.original.sp.siteUrl;
-    if(!siteUrl) {
-        siteUrl = item.original.sp.url;
-    }
-    target.source.web = {
-      // OPTIONAL | OBJECT
-      "publishedTo": [siteUrl], // OPTIONAL | ARRAY | DESCRIPTION: List of environments where the content is published to
-      "url": fullUrl // REQUIRED | STRING | DESCRIPTION: Full web URL to the object
-    };
-    target.source.properties = item.original.properties;
-    target.source.properties.ancestors = item.original.parent.ancestors;
-    target.source.properties.sharePointIds = item.original.xillio.info;
-      // OPTIONAL | OBJECT | DESCRIPTION: Object containing a copy of the original object. Within target it contains the system specific or custom properties.
-        
-        //"binaries": [
-          // OPTIONAL | ARRAY OF _ID REFERRING TO THE BINARY OBJECTS
-        //],
-        /*"acls": [
-          // OPTIONAL | ARRAY OF _ID REFERRING TO THE ACL OBJECTS
-        ],
-        "auditLogs": [
-         // OPTIONAL | ARRAY OF _ID REFERRING TO THE AUDIT LOG OBJECTS
-        ]
-      },*/
-    //target.target = {
-        // OPTIONAL | OBJECT | HOLDS THE VALUES AFTER TRANSFORMATION, EQUAL STRUCTURE TO SOURCE OBJECT
-    //};
-    target.migration = {
-        // REQUIRED | OBJECT
-        "id": item._id, // OPTIONAL | STRING | The id of document after loading into the target repository.
-        "migrate": true, // REQUIRED | BOOLEAN | Determines if the object will be migrated. If false, the object will not be migrated.
-        //"failed": null, // OPTIONAL | BOOLEAN
-        //"failedMessage": "", // OPTIONAL | STRING || Holds the message related to to failed state (error message)
-        //"retryMessage": {}, // OPTIONAL | OBJECT | A copy of the incoming message from the component that generated an error.
-        //"retryTarget": "", // OPTIONAL | STRING  | The name of the component to target when retrying (depends on the targeted flow).
-        "origin" : "Sharepoint2014" // REQUIRED | STRING | Specifies the origin of the document in the Content Store
-    };
-    return target;
-}
-
-function getUrl(item) {
-    if(item.original.sp.url) {
-        return item.original.sp.url;
-    } 
-    var relativePath;
-    if(item.original.fileSystem) {
-        relativePath = item.original.fileSystem.path;
-    } else if(item.original.properties.Metadata&&item.original.properties.Metadata.DefaultViewUrl) {
-        relativePath= item.original.properties.Metadata.DefaultViewUrl;
-        if(item.original.properties.BaseType=="DocumentLibrary") {
-            relativePath = String.replace(relativePath,"/Forms/AllItems.aspx","");
-        }
-    } else if(item.original.data && item.original.data.FileRef) {
-        relativePath = item.original.data.FileRef;
-        var fileName = String.replace(item.original.data.FileRef,"^.*[/\\\\]","");
-        if(!item.original.name.displayName) {
-            item.original.name.displayName = fileName;
-        }
-    }
-    var url = mergePaths(item.original.sp.siteUrl,relativePath);
-    if(item.contentType=="SPList") {
-        url = String.replace(url,"/AllItems.aspx","");
-        return url;
-    }
-    if(!item.original.name.displayName) {
-        item.original.name.displayName = item.original.name.systemName;
-    }
-    if(String.endsWith(url,"/"::item.original.name.displayName)) {
-        System.print("Url already ending with displayName?");
-    }
-    url::="/"::item.original.name.displayName;
-    return url;
-}
-
-function mergePaths(path1,path2) {
-    var overlap = true;
-    path1 = String.replace(path1,"/$","");
-    path2 = String.replace(path2,"^/","");
-    
-    var overlappingPath="";
-    while(path2!="") {
-        overlappingPath::=String.replace(path2, "(^[^/]*/).*", "$1"); // add first path part of relative path to overlappingPath
-        path2 = String.replace(path2,"^[^/]*/",""); // remove first path part from relative path
-        if(String.endsWith(path1::"/", overlappingPath)) {
-            // there is no absolute guarantee that the overlapping part is not actually bigger,
-            // so even though this might work in practice, it should actually be fixed in the export scripts
-            break;
-        }
-    }
-    
-    return path1::"/"::path2;
-}
-
-function validSPName(name) {
-    var forbiddenCharacters = ["\\","/",":","*","\"","<",">","|"];
-    foreach(char in forbiddenCharacters) {
-        name = String.replace(name,char,"-",false);
-    }
-    return name;
-}
-
-
-//CONTENT SCHEMA
-/*
-{
-  "_id": "{{_id}}", // REQUIRED | STRING | DESCRIPTION: A generated id based on objects metadata, must be unique
-  "kind": "RECORD", // REQUIRED | STRING | OPTIONS: ["RECORD", "CONTAINER"]
-  "source": {
-    // REQUIRED | OBJECT | DESCRIPTION: Object containing the data from the source repository
-    "id": "{{source.id}}", // REQUIRED | STRING | DESCRIPTION: The id of the object as it is in the source system.
-    "parentIds": ["{{source.parentIds}}"], // REQUIRED | ARRAY |
-    // DESCRIPTION: The parent source ids of the object. If there is no parent, the value should be an empty array
-    // The parent should also be stored in the database. If for extraction reasons the parent is not stored in the database (in case of the root for example), it should be treated as if there is no parent.
-    "hierarchies": ["{{source.hierarchies}}"], // REQUIRED | ARRAY | DESCRIPTION: Path notation of the location of the object. Always starts with a forward slash.
-    "name": {
-      // REQUIRED | OBJECT
-      "systemName": "{{source.name.systemName}}", // REQUIRED | STRING
-      "displayName": "{{source.name.displayName}}" // OPTIONAL | STRING
-    },
-    "description": "{{source.description}}", // OPTIONAL | STRING
-    "contentType": {
-      // REQUIRED | OBJECT
-      "systemName": "{{source.contentType.systemName}}", // REQUIRED | STRING | DESCRIPTION: System name of the content type of the object
-      "displayName": "{{source.contentType.displayName}}" // OPTIONAL | STRING | DESCRIPTION: Display name of the content type of the object
-    },
-    "versionInfo": {
-      // REQUIRED | OBJECT
-      "label": "{{source.versionInfo.label}}", // OPTIONAL | STRING | DESCRIPTION: Version label of the object, if non existing in the source repository set to ‘1.0’.
-      "minor": 1, // REQUIRED | NUMBER
-      "major": 1, // REQUIRED | NUMBER
-      "seriesId": "{{source.versionInfo.seriesId}}", // REQUIRED | STRING | An identifier that represents the complete set of versions
-
-
-    },
-    "states": ["{{source.states}}"], // REQUIRED | ARRAY | DESCRIPTION: One or more state values, think hidden, archived, deleted, etc. If none, provide an empty list
-    "created": {
-      // OPTIONAL | OBJECT
-      "date": "{{source.created.date}}", // REQUIRED | DATE
-      "principal": {
-        // OPTIONAL | OBJECT
-        "systemName": "{{source.created.principal.systemName}}", // REQUIRED | STRING
-        "displayName": "{{source.created.principal.displayName}}" // OPTIONAL | STRING
-      }
-    },
-    "lastModified": {
-      // OPTIONAL | OBJECT
-      "date": "{{source.lastModified.date}}", // REQUIRED | DATE
-      "principal": {
-        // OPTIONAL | OBJECT
-        "systemName": "{{source.lastModified.principal.systemName}}", // REQUIRED | STRING
-        "displayName": "{{source.lastModified.principal.displayName}}" // OPTIONAL | STRING
-      }
-    },
-    "lastAccessed": {
-      // OPTIONAL | OBJECT
-      "date": "{{source.lastAccessed.date}}", // OPTIONAL | DATE
-      "principal": {
-        // OPTIONAL | OBJECT
-        "systemName": "{{source.lastAccessed.principal.systemName}}", // REQUIRED | STRING
-        "displayName": "{{source.lastAccessed.principal.displayName}}" // OPTIONAL | STRING
-      }
-    },
-    "author": {
-      // OPTIONAL | OBJECT
-      "principal": {
-        // REQUIRED | OBJECT
-        "systemName": "{{source.author.principal.systemName}}", // REQUIRED | STRING
-        "displayName": "{{source.author.principal.displayName}}" // OPTIONAL | STRING
-      }
-    },
-    "owner": {
-      // OPTIONAL | OBJECT
-      "principal": {
-        // REQUIRED | OBJECT
-        "systemName": "{{source.owner.principal.systemName}}", // REQUIRED | STRING
-        "displayName": "{{source.owner.principal.displayName}}" // OPTIONAL | STRING
-      }
-    },
-    "language": {
-      // OPTIONAL | OBJECT
-      "systemName": "{{source.language.systemName}}", // REQUIRED | STRING
-      "displayName": "{{source.language.displayName}}", //OPTIONAL | STRING
-      "masterReference": "{{_id}}" // REQUIRED | STRING | DESCRIPTION: If the object is the master, reference to itself
-    },
-    "web": {
-      // OPTIONAL | OBJECT
-      "publishedTo": "{{source.web.publishedTo}}", // OPTIONAL | ARRAY | DESCRIPTION: List of environments where the content is published to
-      "url": "{{source.web.url}}" // REQUIRED | STRING | DESCRIPTION: Full web URL to the object
-    },
-    "properties": {
-      // OPTIONAL | OBJECT | DESCRIPTION: Object containing a copy of the original object. Within target it contains the system specific or custom properties.
-    },
-    "binaries": [
-      // OPTIONAL | ARRAY OF _ID REFERRING TO THE BINARY OBJECTS
-    ],
-    "acls": [
-      // OPTIONAL | ARRAY OF _ID REFERRING TO THE ACL OBJECTS
-    ],
-    "auditLogs": [
-     // OPTIONAL | ARRAY OF _ID REFERRING TO THE AUDIT LOG OBJECTS
-    ]
-  },
-  "target": {
-    // OPTIONAL | OBJECT | HOLDS THE VALUES AFTER TRANSFORMATION, EQUAL STRUCTURE TO SOURCE OBJECT
-  },
-  "migration": {
-    // REQUIRED | OBJECT
-    "id": "{{migration.id}}", // OPTIONAL | STRING | The id of document after loading into the target repository.
-    "migrate": true, // REQUIRED | BOOLEAN | Determines if the object will be migrated. If false, the object will not be migrated.
-    "failed": false, // OPTIONAL | BOOLEAN
-    "failedMessage": "", // OPTIONAL | STRING || Holds the message related to to failed state (error message)
-    "retryMessage": {}, // OPTIONAL | OBJECT | A copy of the incoming message from the component that generated an error.
-    "retryTarget": "" // OPTIONAL | STRING  | The name of the component to target when retrying (depends on the targeted flow).
-    "origin" : "{{migration.origin}}" // REQUIRED | STRING | Specifies the origin of the document in the Content Store
-  }
-}
-*/
-
-
-// BINARY SCHEMA
-/*
-{
-  "_id": "{{source.id}}", // REQUIRED | STRING
-  "kind": "BINARY", // REQUIRED | STRING | OPTIONS: ["BINARY"]
-  "source": {
-    // REQUIRED | OBJECT
-    "name": {
-      // OPTIONAL | OBJECT
-      "systemName": "{{source.name.systemName}}", // REQUIRED | STRING
-      "displayName": "{{source.name.displayName}}" // OPTIONAL | STRING
-    },
-    "type": "{{source.type}}", // OPTIONAL | STRING | Field to specify a certain binary type, for example if the binary is a rendition.
-    "rawExtension": "{{source.rawExtension}}", // REQUIRED | STRING
-    "extension": "{{source.extension}}", // REQUIRED | STRING
-    "byteSize": 1, // REQUIRED | NUMBER
-    "externalReference": "{{source.externalReference}}", // OPTIONAL | STRING | DESCRIPTION: Reference where the binary resides, this can be a URL or a path to a network drive
-    "localReference": "{{source.localReference}}", // OPTIONAL | STRING | DESCRIPTION: Reference to the local GridFS copy of the binary
-    "hash": {
-      // OPTIONAL | OBJECT REQUIRES AT LEAST ONE OF THE KEYS: ["md5", "sha1", "sha256", "sha512"]
-      "md5": "{{source.hash.md5}}", // OPTIONAL | STRING
-      "sha1": "{{source.hash.sha1}}", // OPTIONAL | STRING
-      "sha256": "{{source.hash.sha256}}", // OPTIONAL | STRING
-      "sha512": "{{source.hash.sha512}}" // OPTIONAL | STRING
-    },
-    "properties": {
-      // OPTIONAL | OBJECT | DESCRIPTION: Object containing a copy of the original object
-    }
-  },
-  "target": {
-    // OPTIONAL | OBJECT | FILLING IN ONE OR MORE KEY(S) TRIGGERS VALIDATION AS SOURCE OBJECT
-  },
-  "migration": {
-    // REQUIRED | OBJECT
-    "id": "{{migration.id}}", // OPTIONAL | STRING | The id of document after loading into the target repository.
-    "migrate": true, // REQUIRED | BOOLEAN | Determines if the object will be migrated. If false, the object will not be migrated.
-    "failed": false, // OPTIONAL | BOOLEAN
-    "failedMessage": "", // OPTIONAL | STRING || Holds the message related to to failed state (error message)
-    "retryMessage" : {}, // OPTIONAL | OBJECT | A copy of the incoming message from the component that generated an error.
-    "retryTarget" : "" // OPTIONAL | STRING  | The name of the component to target when retrying (depends on the targeted flow).
-    "origin" : "{{migration.origin}}" // REQUIRED | STRING | Specifies the origin of the document in the Content Store
-  }
-}
-*/
